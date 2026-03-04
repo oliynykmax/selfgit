@@ -1,6 +1,12 @@
 # Self-hosted Git Server on Railway
 
-A minimal Git server with HTTP authentication, deployable on Railway.
+A minimal Git server with HTTP authentication, deployable on Railway. Part of my Railway-hosted ecosystem alongside my translation bot.
+
+## Why?
+
+I use this for school courses where I need to submit weekly assignments. Instead of creating a new repo on my personal GitHub every week, I push to this server. Everyone can clone to see my work, but only I can push.
+
+**Use case:** Course repositories that I don't want polluting my GitHub profile.
 
 ## Features
 
@@ -8,6 +14,8 @@ A minimal Git server with HTTP authentication, deployable on Railway.
 - Public read (clone/fetch) - anyone can clone
 - Private write (push) - requires token authentication
 - Minimal Docker image (~50MB)
+
+⚠️ **Important:** Railway free tier has ephemeral storage - repositories reset on each deploy. Do not rely on this for long-term storage. It's intended for temporary course work.
 
 ## Quick Deploy
 
