@@ -1,0 +1,6 @@
+# Local environment (copy from .env.example and fill)
+.env
+
+# OS
+.DS_Store
+Thumbs.db
