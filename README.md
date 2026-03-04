@@ -5,6 +5,7 @@ Git server on Railway. Used for school courses - push weekly assignments here in
 ## Deploy
 
 ```bash
+railway login
 git clone https://github.com/oliynykmax/selfgit.git
 cd selfgit
 railway init
