@@ -9,6 +9,9 @@ else
     htpasswd -cb /etc/nginx/.htpasswd git "changeme"
 fi
 
-spawn-fcgi -s /tmp/fcgi.sock -u nginx -g nginx /usr/bin/fcgiwrap
+# Fix git home to avoid /root access warnings
+export HOME=/tmp
+
+spawn-fcgi -s /tmp/fcgi.sock -u nginx -g nginx -e HOME=/tmp /usr/bin/fcgiwrap
 chmod 777 /tmp/fcgi.sock
 nginx -g "daemon off;"
