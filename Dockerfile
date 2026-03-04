@@ -3,7 +3,7 @@ FROM alpine:3.19
 RUN apk add --no-cache git git-daemon fcgiwrap spawn-fcgi nginx apache2-utils
 
 COPY nginx.conf /etc/nginx/nginx.conf
-COPY git-fastcgi.conf /etc/nginx/git-fastcgi.conf
+COPY git.conf /etc/nginx/git.conf
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
