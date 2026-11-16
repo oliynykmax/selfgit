@@ -6,7 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "routes": [{ "pattern": "git.oliinyk.dev", "custom_domain": true }],
   "workers_dev": false,
-  "secrets": { "required": ["GIT_TOKEN"] },
+  "vars": { "GITHUB_OWNER_ID": "85843900" },
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "durable_objects": {
     "bindings": [{ "name": "REPOS", "class_name": "Repository" }]
