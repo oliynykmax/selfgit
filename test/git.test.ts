@@ -1,17 +1,24 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Subprocess, spawn, spawnSync } from "bun";
 
-const TOKEN = "integration-test-token";
+function ghOutput(...args: string[]): string {
+  const result = spawnSync(["gh", ...args], { stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(`gh ${args[0]} ${args[1]} failed; the push tests need a logged-in gh CLI`);
+  return result.stdout.toString().trim();
+}
+
+const TOKEN = process.env.GH_TOKEN || ghOutput("auth", "token", "--hostname", "github.com");
+const OWNER_ID = ghOutput("api", "user", "--jq", ".id");
 const ROOT = join(import.meta.dir, "..");
 const work = mkdtempSync(join(tmpdir(), "selfgit-test-"));
 const state = join(work, "state");
 const port = 20000 + Math.floor(Math.random() * 20000);
 const base = `http://127.0.0.1:${port}`;
-const pushBase = `http://git:${TOKEN}@127.0.0.1:${port}`;
+const GH_HELPER = '!f() { test "$1" = get && echo username=git && echo "password=$(gh auth token --hostname github.com)"; }; f';
 let server: Subprocess | undefined;
 
 const gitEnv = {
@@ -24,8 +31,12 @@ const gitEnv = {
   GIT_AUTHOR_EMAIL: "student@example.com",
   GIT_COMMITTER_NAME: "Student",
   GIT_COMMITTER_EMAIL: "student@example.com",
+  GH_TOKEN: TOKEN,
 };
-writeFileSync(join(work, "gitconfig"), "[init]\n\tdefaultBranch = main\n[protocol]\n\tversion = 2\n");
+writeFileSync(
+  join(work, "gitconfig"),
+  `[init]\n\tdefaultBranch = main\n[protocol]\n\tversion = 2\n[credential]\n\thelper = store\n[credential "${base}"]\n\thelper =\n\thelper = ${JSON.stringify(GH_HELPER)}\n`,
+);
 
 function git(cwd: string, ...args: string[]) {
   const result = spawnSync(["git", ...args], { cwd, env: gitEnv, stdout: "pipe", stderr: "pipe" });
@@ -46,7 +57,7 @@ function dir(name: string): string {
 function newRepo(remote: string): string {
   const path = dir("src");
   ok(work, "init", "-q", path);
-  ok(path, "remote", "add", "origin", `${pushBase}/${remote}.git`);
+  ok(path, "remote", "add", "origin", `${base}/${remote}.git`);
   return path;
 }
 
@@ -65,7 +76,7 @@ function clone(remote: string, ...args: string[]): string {
 
 async function startServer() {
   server = spawn(
-    [join(ROOT, "node_modules/.bin/wrangler"), "dev", "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `GIT_TOKEN:${TOKEN}`, "--log-level", "warn"],
+    [join(ROOT, "node_modules/.bin/wrangler"), "dev", "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `GITHUB_OWNER_ID:${OWNER_ID}`, "--log-level", "warn"],
     { cwd: ROOT, stdout: "ignore", stderr: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
   );
   for (let i = 0; i < 120; i++) {
@@ -107,17 +118,19 @@ describe("smart HTTP Git on a Durable Object", () => {
     ok(copy, "fsck", "--full", "--strict");
   });
 
-  test("push requires git:<token>; reads stay public", async () => {
+  test("push requires the owner's GitHub token through the gh helper; reads stay public", async () => {
     const src = newRepo("repo2");
     commit(src, "f.txt", "x\n");
-    for (const remote of [`${base}/repo2.git`, `http://git:wrong@127.0.0.1:${port}/repo2.git`, `http://other:${TOKEN}@127.0.0.1:${port}/repo2.git`]) {
-      const denied = git(src, "push", remote, "main");
-      expect(denied.code).not.toBe(0);
-      expect(denied.err).toMatch(/Authentication failed|401|could not read Username/);
-    }
+    const anonymous = git(src, "-c", `credential.${base}.helper=`, "push", "origin", "main");
+    expect(anonymous.code).not.toBe(0);
+    expect(anonymous.err).toMatch(/could not read Username/);
+    const forged = git(src, "push", `http://git:gho_${randomBytes(18).toString("hex")}@127.0.0.1:${port}/repo2.git`, "main");
+    expect(forged.code).not.toBe(0);
+    expect(forged.err).toMatch(/Authentication failed/);
     expect(ok(work, "ls-remote", `${base}/repo2.git`)).toBe("");
     ok(src, "push", "-q", "origin", "main");
     expect(ok(work, "ls-remote", `${base}/repo2.git`, "refs/heads/main")).toContain("refs/heads/main");
+    expect(existsSync(join(work, ".git-credentials"))).toBe(false);
 
     const advert = await fetch(`${base}/repo2.git/info/refs?service=git-receive-pack`);
     expect(advert.status).toBe(401);
@@ -320,7 +333,7 @@ describe("smart HTTP Git on a Durable Object", () => {
     ok(src, "push", "-q", "--mirror", source);
 
     const result = spawnSync(["sh", join(ROOT, "scripts/transfer.sh"), `file://${work}`, base], {
-      env: { ...gitEnv, GIT_TOKEN: TOKEN, SELFGIT_REPOS: "old-server:repo9" },
+      env: { ...gitEnv, SELFGIT_REPOS: "old-server:repo9" },
       stdout: "pipe",
       stderr: "pipe",
     });

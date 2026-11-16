@@ -12,13 +12,20 @@ Clone and fetch are public:
 git clone https://git.oliinyk.dev/repo1.git
 ```
 
-Push needs HTTP Basic auth with user `git` and the token:
+Push is tied to the owner's GitHub CLI login. Git sends a GitHub token as the HTTP Basic password. The Worker asks `https://api.github.com/user` whose token it is and accepts only the GitHub account with id `GITHUB_OWNER_ID` in `wrangler.jsonc` (85843900, `oliynykmax`). The id is checked, not the login name, because a login can be renamed and later claimed by someone else.
+
+Give Git the token from `gh` for this host only:
 
 ```bash
-git config --global credential.helper store
-echo "https://git:TOKEN@git.oliinyk.dev" >> ~/.git-credentials
+git config --global credential.https://git.oliinyk.dev.helper ''
+git config --global --add credential.https://git.oliinyk.dev.helper \
+  '!f() { test "$1" = get && echo username=git && echo "password=$(gh auth token --hostname github.com)"; }; f'
 git push origin main
 ```
+
+The first line empties the helper list for `https://git.oliinyk.dev`, so a global `credential.helper store` or a keychain never saves the token. Other hosts keep their helpers. Drop `--global` and run both lines inside a clone to limit the helper to that one repo. `gh auth setup-git` cannot do this: it only configures hosts that `gh` itself is logged in to, such as `github.com`.
+
+The token is fetched fresh on every push and never written to disk by Git. Clone and fetch send no credentials.
 
 Shallow clones (`--depth`, `fetch --depth`, `--unshallow`), tags, branch deletion, force pushes, and atomic pushes work as they do against stock `git-http-backend`.
 
@@ -26,13 +33,10 @@ Shallow clones (`--depth`, `fetch --depth`, `--unshallow`), tags, branch deletio
 
 ```bash
 bun install
-bunx wrangler secret put GIT_TOKEN   # paste a value from: openssl rand -hex 16
 bun run deploy
 ```
 
-`wrangler.jsonc` attaches the Worker to the custom domain `git.oliinyk.dev`. On 2026-11-16 that hostname had no DNS records and no Worker bound to it.
-
-The Worker refuses every push until `GIT_TOKEN` is set. The Railway image fell back to the token `changeme`.
+There is no secret to set. `wrangler.jsonc` attaches the Worker to the custom domain `git.oliinyk.dev` and sets `GITHUB_OWNER_ID`. Find another account's id with `gh api user --jq .id`. The Worker refuses every push if the id is missing or not a number. The Railway image used a shared token and fell back to `changeme`.
 
 ## Moving from Railway
 
@@ -43,21 +47,29 @@ On 2026-11-16 the Railway project `selfgit` had no active deployment. Every past
 
    ```bash
    git remote set-url origin https://git.oliinyk.dev/repo1.git
-   echo "https://git:TOKEN@git.oliinyk.dev" >> ~/.git-credentials
    git push --all origin && git push --tags origin
    ```
 
 3. If some other Git server still holds repos, `scripts/transfer.sh` mirrors every branch and tag and then compares the refs on both sides. It never writes to the source:
 
    ```bash
-   GIT_TOKEN=<new token> scripts/transfer.sh https://old.example https://git.oliinyk.dev
+   scripts/transfer.sh https://old.example https://git.oliinyk.dev
    ```
 
    `SELFGIT_REPOS="repo1:repo1 repo3:repo7"` picks or renames repos.
 4. The Railway project can be deleted from the Railway dashboard. Nothing on Cloudflare depends on it.
 
+## Push authentication tradeoffs
+
+- The `gh` token has the scopes `gh auth login` granted, typically `repo`, so the Worker receives a credential that can act on your GitHub account. It is sent only to `api.github.com` (redirects are not followed), cached only as a SHA-256 hash, and never logged by the Worker. To limit the exposure, push with a fine-grained personal access token that has no permissions instead: `/user` works with any valid token.
+- A verified token is cached in the Worker isolate for 5 minutes, so a push makes one GitHub call instead of one per HTTP request. A revoked token keeps working for up to 5 minutes on an isolate that already cached it. Failed checks are not cached.
+- Each check counts against the owner's own GitHub REST budget of 5,000 requests per hour.
+- If GitHub is down, slow (over 5 s), or rate-limits the check, pushes fail with 503 and Git does not discard the credential. Clone and fetch never call GitHub and keep working.
+- A wrong account gets 403. A missing or rejected token gets 401.
+
 ## Differences from the Railway server
 
+- Push uses the owner's GitHub token instead of a shared `git:TOKEN` password.
 - `GET /repoN.git/info/refs?service=git-receive-pack` now requires the push credentials too, not only the `POST`. Git asks for credentials one request earlier and pushes the same way.
 - Repos have no configurable `HEAD`. It points at `main`, else `master`, else the first branch, so a clone checks out whatever branch the repo uses.
 - The server speaks protocol v0. Git clients that ask for v2 fall back to it automatically.
@@ -82,11 +94,12 @@ bun run typecheck
 bun run test
 ```
 
-The tests start `wrangler dev` with persisted local state and drive it with the real `git` CLI: clone, push, fetch, thin packs with deltas, multi-megabyte binaries, tags, deletes, force and atomic pushes, gzip request bodies, the transfer script, and a runtime restart to prove persistence. The shallow-clone test runs the same steps against stock `git-http-backend` (`test/reference.ts`) and requires identical results.
+`test/auth.test.ts` checks push authorization against a fake GitHub: owner, other account, rejected and missing tokens, outages, redirects, and caching. `test/git.test.ts` needs a logged-in `gh` (or `GH_TOKEN`), because its pushes verify a real token with GitHub through the credential helper above. It starts `wrangler dev` with persisted local state and drives it with the real `git` CLI: clone, push, fetch, thin packs with deltas, multi-megabyte binaries, tags, deletes, force and atomic pushes, gzip request bodies, the transfer script, and a runtime restart to prove persistence. The shallow-clone test runs the same steps against stock `git-http-backend` (`test/reference.ts`) and requires identical results.
 
 Source layout:
 
-- `src/index.ts` routes requests and checks push credentials.
+- `src/index.ts` routes requests.
+- `src/auth.ts` verifies push tokens with GitHub.
 - `src/repo.ts` is the Durable Object that serves one repository.
 - `src/protocol.ts` implements ref advertisement, upload-pack negotiation (including shallow), and receive-pack.
 - `src/pack.ts` reads incoming packs, resolves deltas, and writes outgoing packs.
