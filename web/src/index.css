@@ -1,0 +1,171 @@
+@layer ui-sdk;
+
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@ui-sdk/core/web.css" layer(components);
+@import "@fontsource-variable/schibsted-grotesk";
+@import "@fontsource-variable/jetbrains-mono";
+
+@theme inline {
+  --font-sans: "Schibsted Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-added: var(--added);
+  --color-added-muted: var(--added-muted);
+  --color-removed: var(--removed);
+  --color-removed-muted: var(--removed-muted);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+:root {
+  color-scheme: light;
+  --background: #fff;
+  --foreground: oklch(0.17 0 0);
+  --card: #fff;
+  --card-foreground: oklch(0.17 0 0);
+  --popover: #fff;
+  --popover-foreground: oklch(0.17 0 0);
+  --primary: oklch(0.21 0 0);
+  --primary-foreground: #fff;
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.21 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.5 0 0);
+  --accent: oklch(0.96 0 0);
+  --accent-foreground: oklch(0.21 0 0);
+  --destructive: oklch(0.55 0.21 27);
+  --border: oklch(0.91 0 0);
+  --input: oklch(0.86 0 0);
+  --ring: oklch(0.6 0 0);
+  --radius: 0.5rem;
+  --added: oklch(0.47 0.13 150);
+  --added-muted: oklch(0.96 0.04 150);
+  --removed: oklch(0.5 0.18 25);
+  --removed-muted: oklch(0.96 0.03 25);
+
+  --ui-background: var(--background);
+  --ui-foreground: var(--foreground);
+  --ui-muted: var(--muted);
+  --ui-muted-foreground: var(--muted-foreground);
+  --ui-border: var(--border);
+  --ui-input: var(--input);
+  --ui-primary: var(--primary);
+  --ui-primary-foreground: var(--primary-foreground);
+  --ui-destructive: var(--destructive);
+  --ui-ring: var(--ring);
+  --ui-ring-border: var(--ring);
+  --ui-radius: var(--radius);
+  --ui-font-sans: var(--font-sans);
+  --ui-font-mono: var(--font-mono);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans antialiased;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@layer components {
+  /* web.css underlines every link from the nested components.ui-sdk layer; this parent layer outranks it. */
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .markdown {
+    @apply text-[0.95rem] leading-7 break-words;
+  }
+  .markdown > :first-child {
+    @apply mt-0;
+  }
+  .markdown h1 {
+    @apply mt-6 mb-3 border-b pb-2 text-2xl font-semibold;
+  }
+  .markdown h2 {
+    @apply mt-6 mb-3 border-b pb-1.5 text-xl font-semibold;
+  }
+  .markdown h3 {
+    @apply mt-5 mb-2 text-lg font-semibold;
+  }
+  .markdown h4,
+  .markdown h5,
+  .markdown h6 {
+    @apply mt-4 mb-2 font-semibold;
+  }
+  .markdown p,
+  .markdown ul,
+  .markdown ol,
+  .markdown blockquote,
+  .markdown pre,
+  .markdown table {
+    @apply mb-4;
+  }
+  .markdown ul {
+    @apply list-disc pl-6;
+  }
+  .markdown ol {
+    @apply list-decimal pl-6;
+  }
+  .markdown li > ul,
+  .markdown li > ol {
+    @apply mb-0;
+  }
+  .markdown a {
+    @apply underline underline-offset-2;
+  }
+  .markdown code {
+    @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em];
+  }
+  .markdown pre {
+    @apply overflow-x-auto rounded-md border bg-muted/60 p-3 text-sm leading-6;
+  }
+  .markdown pre code {
+    @apply bg-transparent p-0;
+  }
+  .markdown blockquote {
+    @apply border-l pl-4 text-muted-foreground;
+  }
+  .markdown table {
+    @apply block overflow-x-auto;
+  }
+  .markdown th,
+  .markdown td {
+    @apply border px-3 py-1.5 text-left;
+  }
+  .markdown img {
+    @apply inline max-w-full;
+  }
+  .markdown hr {
+    @apply my-6;
+  }
+  .markdown input[type="checkbox"] {
+    @apply mr-1.5 align-middle;
+  }
+}
