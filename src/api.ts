@@ -1,4 +1,4 @@
-import { isRepoName, type RepoName, REPO_NAMES, type Session } from "./api-types";
+import { isRepoName, type RepoName, type Session } from "./api-types";
 import { imageType } from "./browse";
 import { currentUser, type OAuthConfig, sameOrigin } from "./oauth";
 import type { Result } from "./repo";
@@ -91,14 +91,24 @@ export async function handleApi(context: ApiContext): Promise<Response> {
     return json(session);
   }
   if (parts[0] === "repos" && parts.length === 1 && method === "GET") {
-    const summaries = await Promise.all(REPO_NAMES.map(async (name) => stub(env, name).summary(name)));
+    const names = await env.REGISTRY.getByName("registry").list();
+    const summaries = await Promise.all(names.map(async (name) => stub(env, name).summary(name)));
     const failed = summaries.find((result) => !result.ok);
     if (failed && !failed.ok) return error(failed.status, failed.error);
     return json(summaries.flatMap((result) => (result.ok ? [result.value] : [])));
   }
+  if (parts[0] === "repos" && parts.length === 1 && method === "POST") {
+    if (!sameOrigin(request)) return error(403, "Cross-site request refused");
+    if (!(await currentUser(request, auth))) return error(401, "Sign in as the owner");
+    const body: unknown = await request.json().catch(() => null);
+    if (!body || typeof body !== "object" || !("name" in body) || typeof body.name !== "string" || !isRepoName(body.name))
+      return error(400, "Use lowercase letters, numbers, dots, hyphens or underscores. Names must begin with a letter or number, and cannot end in a dot or .git.");
+    if (!(await env.REGISTRY.getByName("registry").create(body.name))) return error(409, "Repository already exists");
+    return json({ name: body.name }, 201);
+  }
   if (parts[0] === "repos" && parts.length >= 2) {
     const name = parts[1]!;
-    if (!isRepoName(name)) return error(404, `No repository named ${name}`);
+    if (!isRepoName(name) || !(await env.REGISTRY.getByName("registry").exists(name))) return error(404, `No repository named ${name}`);
     const [section = "", ...rest] = parts.slice(2);
     const route = REPO_ROUTES[section];
     if (!route || rest.length > (section === "commits" ? 1 : 0)) return error(404, "Not found");

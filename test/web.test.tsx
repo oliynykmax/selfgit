@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import globalJsdom from "global-jsdom";
 
-const restoreGlobals = globalJsdom(undefined, { url: "https://git.example/repo1", pretendToBeVisual: true });
+const restoreGlobals = globalJsdom(undefined, { url: "https://git.example/course-work", pretendToBeVisual: true });
 globalThis.Event = window.Event;
 globalThis.AbortController = window.AbortController;
 globalThis.AbortSignal = window.AbortSignal;
@@ -37,7 +37,7 @@ afterAll(() => restoreGlobals());
 
 const commit = { oid: "a".repeat(40), parents: [], author: { name: "A", email: "a@x", time: 1, tz: "+0000" }, committer: { name: "A", email: "a@x", time: 1, tz: "+0000" }, subject: "s" };
 const refs = {
-  name: "repo1" as const,
+  name: "course-work" as const,
   defaultBranch: "main",
   branches: [
     { name: "main", commit },
@@ -49,20 +49,20 @@ const refs = {
 describe("routes", () => {
   test("URLs parse into views, and refs with slashes split by the longest known ref", () => {
     expect(parseRoute("/")).toEqual({ kind: "home" });
-    expect(parseRoute("/repo1")).toEqual({ kind: "tree", repo: "repo1", rest: [] });
-    expect(parseRoute("/repo1/blob/feature/reverse/src/a%20b.c")).toEqual({ kind: "blob", repo: "repo1", rest: ["feature", "reverse", "src", "a b.c"] });
-    expect(parseRoute("/repo1/commit/" + "f".repeat(40))).toEqual({ kind: "commit", repo: "repo1", oid: "f".repeat(40) });
-    expect(parseRoute("/repo1/commit/nothex")).toEqual({ kind: "not-found" });
-    expect(parseRoute("/repo11")).toEqual({ kind: "not-found" });
+    expect(parseRoute("/course-work")).toEqual({ kind: "tree", repo: "course-work", rest: [] });
+    expect(parseRoute("/course-work/blob/feature/reverse/src/a%20b.c")).toEqual({ kind: "blob", repo: "course-work", rest: ["feature", "reverse", "src", "a b.c"] });
+    expect(parseRoute("/course-work/commit/" + "f".repeat(40))).toEqual({ kind: "commit", repo: "course-work", oid: "f".repeat(40) });
+    expect(parseRoute("/course-work/commit/nothex")).toEqual({ kind: "not-found" });
+    expect(parseRoute("/invalid%20name")).toEqual({ kind: "not-found" });
     expect(splitRefPath(["feature", "reverse", "src", "a.c"], ["feature", "feature/reverse"])).toEqual({ ref: "feature/reverse", path: "src/a.c" });
     expect(splitRefPath(["main"], ["main"])).toEqual({ ref: "main", path: "" });
     expect(splitRefPath(["nope", "x"], ["main"])).toBeNull();
-    expect(href.blob("repo1", "feature/reverse", "src/a b.c")).toBe("/repo1/blob/feature/reverse/src/a%20b.c");
+    expect(href.blob("course-work", "feature/reverse", "src/a b.c")).toBe("/course-work/blob/feature/reverse/src/a%20b.c");
   });
 });
 
 describe("README rendering", () => {
-  const resolve = { link: (path: string) => `/repo1/blob/main/${path}`, image: (path: string) => `/raw/${path}` };
+  const resolve = { link: (path: string) => `/course-work/blob/main/${path}`, image: (path: string) => `/raw/${path}` };
 
   test("hostile HTML in a README is stripped", () => {
     const html = renderMarkdown(
@@ -80,7 +80,7 @@ describe("README rendering", () => {
     const root = document.createElement("div");
     root.innerHTML = renderMarkdown("[n](../notes.md#top) [abs](/docs/a.md) [ext](https://example.com) ![i](img/a.png)\n\n- [x] done", "docs/week1", resolve);
     const links = [...root.querySelectorAll("a")];
-    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/repo1/blob/main/docs/notes.md#top", "/repo1/blob/main/docs/a.md", "https://example.com"]);
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/course-work/blob/main/docs/notes.md#top", "/course-work/blob/main/docs/a.md", "https://example.com"]);
     expect(links[2]!.getAttribute("rel")).toBe("noopener noreferrer nofollow");
     expect(root.querySelector("img")!.getAttribute("src")).toBe("/raw/docs/week1/img/a.png");
     expect(root.querySelector("input[type=checkbox]")!.hasAttribute("disabled")).toBe(true);
@@ -107,7 +107,7 @@ describe("agent-ready controls", () => {
       calls.push({ url: String(url), method: init?.method ?? "GET" });
       return new Response(null, { status: 200 });
     }) as unknown as typeof fetch;
-    render(<DeleteRef repo="repo1" kind="branch" name="feature/reverse" />);
+    render(<DeleteRef repo="course-work" kind="branch" name="feature/reverse" />);
     globalThis.IS_REACT_ACT_ENVIRONMENT = false;
     expect(agent.snapshot().some((entry) => !entry.offPage && entry.label === "Delete branch feature/reverse")).toBe(true);
     const remove = { steps: [{ ref: "Delete branch feature/reverse", action: "press", args: ["Yes, delete"] }] };
@@ -119,7 +119,7 @@ describe("agent-ready controls", () => {
     approve = true;
     const result = await agent.act(remove);
     expect(result.ok, result.error?.message).toBe(true);
-    expect(calls).toEqual([{ url: "/api/repos/repo1/refs?name=refs%2Fheads%2Ffeature%2Freverse", method: "DELETE" }]);
+    expect(calls).toEqual([{ url: "/api/repos/course-work/refs?name=refs%2Fheads%2Ffeature%2Freverse", method: "DELETE" }]);
     expect(screen.queryByText(/Delete branch/)).toBeNull();
   });
 });

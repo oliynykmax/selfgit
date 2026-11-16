@@ -38,7 +38,7 @@ export function App() {
       {route.kind === "home" ? <Home /> : null}
       {route.kind === "not-found" ? (
         <main className="mx-auto max-w-6xl px-4 py-8">
-          <Problem title="Page not found" detail="Repositories live at /repo1 through /repo10." />
+          <Problem title="Page not found" detail="This page does not exist." />
         </main>
       ) : null}
       {route.kind !== "home" && route.kind !== "not-found" ? <RepoPage key={route.repo} route={route} /> : null}
