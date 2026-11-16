@@ -36,24 +36,25 @@ The Worker refuses every push until `GIT_TOKEN` is set. The Railway image fell b
 
 ## Moving from Railway
 
+On 2026-11-16 the Railway project `selfgit` had no active deployment. Every past deployment showed as removed, the account's trial had expired, and `selfgit-production.up.railway.app` answered 404. The service had no volume, and the container kept repos only on its own disk, so no repository data survives to copy.
+
 1. Deploy as above and check that `git ls-remote https://git.oliinyk.dev/repo1.git` answers.
-2. If the Railway service still runs and holds repos worth keeping, copy them. The script mirrors every branch and tag, then compares the refs on both sides:
-
-   ```bash
-   GIT_TOKEN=<new token> scripts/transfer.sh https://<old>.up.railway.app https://git.oliinyk.dev
-   ```
-
-   `SELFGIT_REPOS="repo1:repo1 repo3:repo7"` picks or renames repos. The script never writes to the old server.
-3. Point existing clones at the new remote and store the new credentials:
+2. Push each course repo from a local clone that still has its history:
 
    ```bash
    git remote set-url origin https://git.oliinyk.dev/repo1.git
    echo "https://git:TOKEN@git.oliinyk.dev" >> ~/.git-credentials
+   git push --all origin && git push --tags origin
    ```
 
-4. Shut down the Railway service once nothing pushes to it.
+3. If some other Git server still holds repos, `scripts/transfer.sh` mirrors every branch and tag and then compares the refs on both sides. It never writes to the source:
 
-On 2026-11-16 the Railway CLI on the maintainer's machine was logged out, and no oliinyk.dev hostname pointed at Railway. Whether a Railway deployment or any data still exists was not verified. The old container kept repos only until its next deploy, so there may be nothing to copy.
+   ```bash
+   GIT_TOKEN=<new token> scripts/transfer.sh https://old.example https://git.oliinyk.dev
+   ```
+
+   `SELFGIT_REPOS="repo1:repo1 repo3:repo7"` picks or renames repos.
+4. The Railway project can be deleted from the Railway dashboard. Nothing on Cloudflare depends on it.
 
 ## Differences from the Railway server
 
