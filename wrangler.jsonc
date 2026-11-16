@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "selfgit",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [{ "pattern": "git.oliinyk.dev", "custom_domain": true }],
+  "workers_dev": false,
+  "secrets": { "required": ["GIT_TOKEN"] },
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "durable_objects": {
+    "bindings": [{ "name": "REPOS", "class_name": "Repository" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Repository"] }]
+}
