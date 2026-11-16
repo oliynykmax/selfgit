@@ -1,8 +1,8 @@
-export const REPO_NAMES = ["repo1", "repo2", "repo3", "repo4", "repo5", "repo6", "repo7", "repo8", "repo9", "repo10"] as const;
-export type RepoName = (typeof REPO_NAMES)[number];
+export type RepoName = string;
 
 export function isRepoName(value: string): value is RepoName {
-  return (REPO_NAMES as readonly string[]).includes(value);
+  return /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9_-])?$/.test(value) &&
+    !value.endsWith(".git") && !["api", "auth", "assets", "favicon.ico"].includes(value);
 }
 
 export interface Signature {

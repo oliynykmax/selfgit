@@ -1,11 +1,13 @@
+import { isRepoName } from "./api-types";
 import { handleApi } from "./api";
 import { denyPush, GitHubIdentity } from "./auth";
 import { CALLBACK_PATH, finishLogin, LOGIN_PATH, LOGOUT_PATH, logout, type OAuthConfig, startLogin } from "./oauth";
 
 export { Repository } from "./repo";
+export { Registry } from "./registry";
 export { Sessions } from "./sessions";
 
-const GIT_ROUTE = /^\/(repo(?:[1-9]|10))(?:\.git)?\/(info\/refs|git-upload-pack|git-receive-pack)$/;
+const GIT_ROUTE = /^\/([^/]+?)(?:\.git)?\/(info\/refs|git-upload-pack|git-receive-pack)$/;
 const GIT_LOOKING = /^\/[^/]+\.git(\/|$)|^\/[^/]+\/(info\/refs|git-upload-pack|git-receive-pack)$/;
 const githubFetch = (input: string, init: RequestInit) => fetch(input, init);
 const identity = new GitHubIdentity(githubFetch);
@@ -33,6 +35,7 @@ function text(status: number, body: string, headers: Record<string, string> = {}
 }
 
 async function git(request: Request, env: Env, repo: string, endpoint: string, url: URL): Promise<Response> {
+  if (!isRepoName(repo) || !(await env.REGISTRY.getByName("registry").exists(repo))) return text(404, "Not found");
   const service = endpoint === "info/refs" ? url.searchParams.get("service") : endpoint;
   if (service !== "git-upload-pack" && service !== "git-receive-pack") {
     return text(403, "Only the smart HTTP protocol is supported");

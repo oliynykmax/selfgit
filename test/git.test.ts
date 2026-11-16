@@ -20,6 +20,7 @@ const port = 20000 + Math.floor(Math.random() * 20000);
 const base = `http://127.0.0.1:${port}`;
 const GH_HELPER = '!f() { test "$1" = get && echo username=git && echo "password=$(gh auth token --hostname github.com)"; }; f';
 let server: Subprocess | undefined;
+let ownerCookie = "";
 
 const gitEnv = {
   ...process.env,
@@ -76,7 +77,7 @@ function clone(remote: string, ...args: string[]): string {
 
 async function startServer() {
   server = spawn(
-    [join(ROOT, "node_modules/.bin/wrangler"), "dev", "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `GITHUB_OWNER_ID:${OWNER_ID}`, "--log-level", "warn"],
+    [join(ROOT, "node_modules/.bin/wrangler"), "dev", join(ROOT, "test/integration-worker.ts"), "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `GITHUB_OWNER_ID:${OWNER_ID}`, "--var", "GITHUB_OAUTH_CLIENT_ID:test-client", "--var", "GITHUB_OAUTH_CLIENT_SECRET:test-secret", "--log-level", "warn"],
     { cwd: ROOT, stdout: "ignore", stderr: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
   );
   for (let i = 0; i < 120; i++) {
@@ -95,23 +96,57 @@ async function stopServer() {
   server = undefined;
 }
 
-beforeAll(startServer, 60_000);
+beforeAll(async () => {
+  await startServer();
+  const login = await fetch(`${base}/auth/github/login`, { redirect: "manual" });
+  const flow = login.headers.getSetCookie().find((cookie) => cookie.startsWith("__Host-selfgit-oauth="))?.split(";")[0];
+  const location = login.headers.get("Location");
+  if (!flow || !location) throw new Error("OAuth login did not start");
+  const state = new URL(location).searchParams.get("state");
+  const callback = await fetch(`${base}/auth/github/callback?${new URLSearchParams({ state: state ?? "", code: "test-code" })}`, {
+    headers: { Cookie: flow }, redirect: "manual",
+  });
+  ownerCookie = callback.headers.getSetCookie().find((cookie) => cookie.startsWith("__Host-selfgit-session="))?.split(";")[0] ?? "";
+  if (!ownerCookie) throw new Error("OAuth callback did not issue an owner session");
+  for (let i = 1; i <= 10; i++) {
+    const response = await createRepo(`fixture${i}`);
+    if (response.status !== 201) throw new Error(`Repository fixture${i} creation failed: ${response.status} ${await response.text()}`);
+  }
+}, 60_000);
+
+function createRepo(name: unknown, headers: Record<string, string> = { Origin: base, Cookie: ownerCookie }) {
+  return fetch(`${base}/api/repos`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ name }) });
+}
 afterAll(async () => {
   await stopServer();
   rmSync(work, { recursive: true, force: true });
 });
 
 describe("smart HTTP Git on a Durable Object", () => {
+  test("repository creation requires the owner and a same-origin request", async () => {
+    expect((await createRepo("anonymous", { Origin: base })).status).toBe(401);
+    expect((await createRepo("cross-site", { Origin: "https://evil.example", Cookie: ownerCookie })).status).toBe(403);
+    expect((await createRepo("missing-origin", { Cookie: ownerCookie })).status).toBe(403);
+    expect((await createRepo("cross-fetch", { Origin: base, Cookie: ownerCookie, "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
+    for (const name of ["", "UPPER", "bad/name", "ends.git", 42]) {
+      expect((await createRepo(name)).status).toBe(400);
+    }
+    const created = await createRepo("course-project");
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual({ name: "course-project" });
+    expect((await createRepo("course-project")).status).toBe(409);
+    expect((await fetch(`${base}/course-project.git/info/refs?service=git-upload-pack`)).status).toBe(200);
+  });
   test("clone of an empty repo, push, clone back, fsck", () => {
-    const empty = clone("repo1");
+    const empty = clone("fixture1");
     expect(ok(empty, "rev-list", "--all")).toBe("");
 
-    const src = newRepo("repo1");
+    const src = newRepo("fixture1");
     commit(src, "README.md", "week 1\n");
     const head = commit(src, "a.txt", "assignment\n");
     ok(src, "push", "-q", "origin", "main");
 
-    const copy = clone("repo1");
+    const copy = clone("fixture1");
     expect(ok(copy, "rev-parse", "HEAD")).toBe(head);
     expect(ok(copy, "branch", "--show-current")).toBe("main");
     expect(readFileSync(join(copy, "a.txt"), "utf8")).toBe("assignment\n");
@@ -119,33 +154,33 @@ describe("smart HTTP Git on a Durable Object", () => {
   });
 
   test("push requires the owner's GitHub token through the gh helper; reads stay public", async () => {
-    const src = newRepo("repo2");
+    const src = newRepo("fixture2");
     commit(src, "f.txt", "x\n");
     const anonymous = git(src, "-c", `credential.${base}.helper=`, "push", "origin", "main");
     expect(anonymous.code).not.toBe(0);
     expect(anonymous.err).toMatch(/could not read Username/);
-    const forged = git(src, "push", `http://git:gho_${randomBytes(18).toString("hex")}@127.0.0.1:${port}/repo2.git`, "main");
+    const forged = git(src, "push", `http://git:gho_${randomBytes(18).toString("hex")}@127.0.0.1:${port}/fixture2.git`, "main");
     expect(forged.code).not.toBe(0);
     expect(forged.err).toMatch(/Authentication failed/);
-    expect(ok(work, "ls-remote", `${base}/repo2.git`)).toBe("");
+    expect(ok(work, "ls-remote", `${base}/fixture2.git`)).toBe("");
     ok(src, "push", "-q", "origin", "main");
-    expect(ok(work, "ls-remote", `${base}/repo2.git`, "refs/heads/main")).toContain("refs/heads/main");
+    expect(ok(work, "ls-remote", `${base}/fixture2.git`, "refs/heads/main")).toContain("refs/heads/main");
     expect(existsSync(join(work, ".git-credentials"))).toBe(false);
 
-    const advert = await fetch(`${base}/repo2.git/info/refs?service=git-receive-pack`);
+    const advert = await fetch(`${base}/fixture2.git/info/refs?service=git-receive-pack`);
     expect(advert.status).toBe(401);
     expect(advert.headers.get("WWW-Authenticate")).toContain("Basic");
-    const read = await fetch(`${base}/repo2.git/info/refs?service=git-upload-pack`);
+    const read = await fetch(`${base}/fixture2.git/info/refs?service=git-upload-pack`);
     expect(read.status).toBe(200);
     expect(read.headers.get("Content-Type")).toBe("application/x-git-upload-pack-advertisement");
   });
 
   test("incremental fetch, thin-pack pushes with deltas, force push, branches and tags", () => {
-    const src = newRepo("repo3");
+    const src = newRepo("fixture3");
     const lines = Array.from({ length: 4000 }, (_, i) => `line ${i} ${"lorem ipsum ".repeat(4)}`);
     commit(src, "big.txt", `${lines.join("\n")}\n`);
     ok(src, "push", "-q", "origin", "main");
-    const copy = clone("repo3");
+    const copy = clone("fixture3");
 
     for (let round = 0; round < 5; round++) {
       lines[round * 500] = `changed in round ${round}`;
@@ -161,7 +196,7 @@ describe("smart HTTP Git on a Durable Object", () => {
     ok(src, "tag", "-a", "v1.0", "-m", "release");
     ok(src, "tag", "light");
     ok(src, "push", "-q", "origin", "feature", "--tags");
-    const remote = ok(work, "ls-remote", `${base}/repo3.git`);
+    const remote = ok(work, "ls-remote", `${base}/fixture3.git`);
     expect(remote).toContain(`${feature}\trefs/tags/v1.0^{}`);
     expect(remote).toContain(`${feature}\trefs/tags/light`);
     expect(remote).toMatch(/^[0-9a-f]{40}\tHEAD$/m);
@@ -179,21 +214,21 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect(ok(copy, "rev-parse", "origin/main")).toBe(rewritten);
 
     ok(src, "push", "-q", "origin", "--delete", "feature", "light");
-    const after = ok(work, "ls-remote", `${base}/repo3.git`);
+    const after = ok(work, "ls-remote", `${base}/fixture3.git`);
     expect(after).not.toContain("refs/heads/feature");
     expect(after).not.toContain("refs/tags/light");
     ok(copy, "fsck", "--full");
   });
 
   test("large binary objects split across storage rows", () => {
-    const src = newRepo("repo4");
+    const src = newRepo("fixture4");
     const big = randomBytes(5 * 1024 * 1024 + 123);
     commit(src, "data.bin", big);
     const edited = Buffer.from(big);
     edited.write("patched", 4096);
     commit(src, "data.bin", edited);
     ok(src, "push", "-q", "origin", "main");
-    const copy = clone("repo4");
+    const copy = clone("fixture4");
     expect(Buffer.compare(readFileSync(join(copy, "data.bin")), edited)).toBe(0);
     ok(copy, "checkout", "-q", "HEAD~1");
     expect(Buffer.compare(readFileSync(join(copy, "data.bin")), big)).toBe(0);
@@ -201,13 +236,13 @@ describe("smart HTTP Git on a Durable Object", () => {
   });
 
   test("shallow clone, deepen, unshallow, and tags match stock git-http-backend", async () => {
-    const reference = spawn(["bun", join(import.meta.dir, "reference.ts"), join(work, "reference"), "repo5"], { stdout: "pipe" });
+    const reference = spawn(["bun", join(import.meta.dir, "reference.ts"), join(work, "reference"), "fixture5"], { stdout: "pipe" });
     try {
       const port = (await reference.stdout.getReader().read()).value;
       const referencePort = new TextDecoder().decode(port).trim();
-      const src = newRepo("repo5");
+      const src = newRepo("fixture5");
       const referenceBase = `http://127.0.0.1:${referencePort}`;
-      ok(src, "remote", "add", "reference", `${referenceBase}/repo5.git`);
+      ok(src, "remote", "add", "reference", `${referenceBase}/fixture5.git`);
       const commits = Array.from({ length: 6 }, (_, i) => commit(src, "n.txt", `${i}\n`));
       ok(src, "tag", "-a", "v0", "-m", "old", commits[1]!);
       ok(src, "branch", "old", commits[2]!);
@@ -221,7 +256,7 @@ describe("smart HTTP Git on a Durable Object", () => {
           seen.push(`${ok(path, "rev-list", "--count", "--all")} shallow=[${shallow}] tags=[${ok(path, "tag").split("\n").join(",")}]`);
         };
         const path = dir("shallow");
-        ok(work, "-c", "protocol.version=0", "clone", "-q", "--depth", "1", "--no-single-branch", `${server}/repo5.git`, path);
+        ok(work, "-c", "protocol.version=0", "clone", "-q", "--depth", "1", "--no-single-branch", `${server}/fixture5.git`, path);
         look(path);
         ok(path, "-c", "protocol.version=0", "fetch", "-q", "--depth", "3", "origin", "main");
         look(path);
@@ -242,18 +277,18 @@ describe("smart HTTP Git on a Durable Object", () => {
   });
 
   test("protocol v0 client and HEAD fallback to master", () => {
-    const src = newRepo("repo6");
+    const src = newRepo("fixture6");
     ok(src, "checkout", "-q", "-b", "master");
     const head = commit(src, "m.txt", "master only\n");
     ok(src, "-c", "protocol.version=0", "push", "-q", "origin", "master");
     const path = dir("v0");
-    ok(work, "-c", "protocol.version=0", "clone", "-q", `${base}/repo6.git`, path);
+    ok(work, "-c", "protocol.version=0", "clone", "-q", `${base}/fixture6.git`, path);
     expect(ok(path, "branch", "--show-current")).toBe("master");
     expect(ok(path, "rev-parse", "HEAD")).toBe(head);
   });
 
   test("receive-pack checks old values and honours atomic", async () => {
-    const src = newRepo("repo7");
+    const src = newRepo("fixture7");
     const head = commit(src, "a.txt", "1\n");
     ok(src, "push", "-q", "origin", "main");
     const zero = "0".repeat(40);
@@ -262,7 +297,7 @@ describe("smart HTTP Git on a Durable Object", () => {
     const emptyPack = Buffer.concat([Buffer.from("PACK\0\0\0\x02\0\0\0\0", "latin1")]);
     const pack = Buffer.concat([emptyPack, new Bun.CryptoHasher("sha1").update(emptyPack).digest()]);
     const send = async (commands: string, body: Buffer) => {
-      const response = await fetch(`${base}/repo7.git/git-receive-pack`, {
+      const response = await fetch(`${base}/fixture7.git/git-receive-pack`, {
         method: "POST",
         headers: { Authorization: `Basic ${btoa(`git:${TOKEN}`)}`, "Content-Type": "application/x-git-receive-pack-request" },
         body: Buffer.concat([Buffer.from(commands), body]),
@@ -277,30 +312,30 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect(atomic).toContain("unpack ok");
     expect(atomic).toContain("ng refs/heads/side atomic push failed");
     expect(atomic).toContain("ng refs/heads/main failed to update ref");
-    expect(ok(work, "ls-remote", `${base}/repo7.git`)).not.toContain("refs/heads/side");
+    expect(ok(work, "ls-remote", `${base}/fixture7.git`)).not.toContain("refs/heads/side");
 
     const partial = await push("report-status");
     expect(partial).toContain("ok refs/heads/side");
     expect(partial).toContain("ng refs/heads/main failed to update ref");
-    expect(ok(work, "ls-remote", `${base}/repo7.git`, "refs/heads/side")).toBe(`${head}\trefs/heads/side`);
+    expect(ok(work, "ls-remote", `${base}/fixture7.git`, "refs/heads/side")).toBe(`${head}\trefs/heads/side`);
 
     const orphan = commit(src, "d.txt", "tree never sent\n");
     const onlyCommit = spawnSync(["git", "pack-objects", "--stdout"], { cwd: src, env: gitEnv, stdin: Buffer.from(`${orphan}\n`) });
     const broken = await send(`${pkt(`${zero} ${orphan} refs/heads/broken\0report-status\n`)}0000`, Buffer.from(onlyCommit.stdout));
     expect(broken).toContain("unpack ok");
     expect(broken).toContain("ng refs/heads/broken missing necessary objects");
-    expect(ok(work, "ls-remote", `${base}/repo7.git`)).not.toContain("refs/heads/broken");
+    expect(ok(work, "ls-remote", `${base}/fixture7.git`)).not.toContain("refs/heads/broken");
     const retry = await send(`${pkt(`${zero} ${orphan} refs/heads/broken\0report-status\n`)}0000`, pack);
     expect(retry).toContain("ng refs/heads/broken missing necessary objects");
   });
 
   test("gzip request bodies, rejected wants, and unknown paths", async () => {
-    const src = newRepo("repo8");
+    const src = newRepo("fixture8");
     const head = commit(src, "a.txt", "gzip\n");
     ok(src, "push", "-q", "origin", "main");
     const pkt = (line: string) => (line.length + 4).toString(16).padStart(4, "0") + line;
     const request = `${pkt(`want ${head} multi_ack_detailed side-band-64k\n`)}0000${pkt("done\n")}`;
-    const response = await fetch(`${base}/repo8.git/git-upload-pack`, {
+    const response = await fetch(`${base}/fixture8.git/git-upload-pack`, {
       method: "POST",
       headers: { "Content-Type": "application/x-git-upload-pack-request", "Content-Encoding": "gzip" },
       body: Bun.gzipSync(Buffer.from(request)),
@@ -310,7 +345,7 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect(body.subarray(0, 8).toString()).toBe("0008NAK\n");
     expect(body.includes(Buffer.from("PACK"))).toBe(true);
 
-    const bogus = await fetch(`${base}/repo8.git/git-upload-pack`, {
+    const bogus = await fetch(`${base}/fixture8.git/git-upload-pack`, {
       method: "POST",
       body: `${pkt(`want ${"1".repeat(40)} side-band-64k\n`)}0000${pkt("done\n")}`,
     });
@@ -318,9 +353,9 @@ describe("smart HTTP Git on a Durable Object", () => {
 
     expect((await fetch(`${base}/repo11.git/info/refs?service=git-upload-pack`)).status).toBe(404);
     expect((await fetch(`${base}/repo11/info/refs?service=git-upload-pack`)).status).toBe(404);
-    expect((await fetch(`${base}/repo1.git/HEAD`)).status).toBe(404);
-    expect((await fetch(`${base}/repo1.git/info/refs`)).status).toBe(403);
-    expect((await fetch(`${base}/repo1.git/git-upload-pack`)).status).toBe(405);
+    expect((await fetch(`${base}/fixture1.git/HEAD`)).status).toBe(404);
+    expect((await fetch(`${base}/fixture1.git/info/refs`)).status).toBe(403);
+    expect((await fetch(`${base}/fixture1.git/git-upload-pack`)).status).toBe(405);
   });
 
   test("mirror transfer script copies every ref", () => {
@@ -335,17 +370,17 @@ describe("smart HTTP Git on a Durable Object", () => {
     ok(src, "push", "-q", "--mirror", source);
 
     const result = spawnSync(["sh", join(ROOT, "scripts/transfer.sh"), `file://${work}`, base], {
-      env: { ...gitEnv, SELFGIT_REPOS: "old-server:repo9" },
+      env: { ...gitEnv, SELFGIT_REPOS: "old-server:fixture9" },
       stdout: "pipe",
       stderr: "pipe",
     });
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
     const strip = (refs: string) => refs.split("\n").filter((line) => !line.endsWith("\tHEAD")).join("\n");
-    expect(strip(ok(work, "ls-remote", `${base}/repo9.git`))).toBe(strip(ok(work, "ls-remote", source)));
+    expect(strip(ok(work, "ls-remote", `${base}/fixture9.git`))).toBe(strip(ok(work, "ls-remote", source)));
   });
 
   test("the browse API reads what Git pushed", async () => {
-    const src = newRepo("repo10");
+    const src = newRepo("fixture10");
     mkdirSync(join(src, "src"));
     commit(src, "README.md", "# Week\n\n<script>x</script>\n", "Add readme");
     commit(src, "src/main.c", "int main(void) {\n  return 0;\n}\n", "Add main");
@@ -359,7 +394,7 @@ describe("smart HTTP Git on a Durable Object", () => {
     ok(src, "push", "-q", "origin", "main", "topic/x");
 
     const api = async (path: string) => {
-      const response = await fetch(`${base}/api/repos/repo10${path}`);
+      const response = await fetch(`${base}/api/repos/fixture10${path}`);
       return { status: response.status, body: (await response.json()) as any };
     };
     const refs = await api("");
@@ -393,30 +428,30 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect(diff.body.files).toHaveLength(1);
     expect(diff.body.files[0]).toMatchObject({ path: "src/main.c", status: "modified", additions: 1, deletions: 1 });
 
-    const html = await fetch(`${base}/api/repos/repo10/raw?ref=main&path=page.html`);
+    const html = await fetch(`${base}/api/repos/fixture10/raw?ref=main&path=page.html`);
     expect(html.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
     expect(html.headers.get("Content-Security-Policy")).toContain("sandbox");
     expect(html.headers.get("X-Content-Type-Options")).toBe("nosniff");
 
-    const page = await fetch(`${base}/repo10/tree/main/src`);
+    const page = await fetch(`${base}/fixture10/tree/main/src`);
     expect(page.status).toBe(200);
     expect(page.headers.get("Content-Type")).toContain("text/html");
     expect(page.headers.get("Content-Security-Policy")).toContain("script-src 'self'");
 
-    const deleteUrl = `${base}/api/repos/repo10/refs?name=${encodeURIComponent("refs/heads/topic/x")}`;
+    const deleteUrl = `${base}/api/repos/fixture10/refs?name=${encodeURIComponent("refs/heads/topic/x")}`;
     expect((await fetch(deleteUrl, { method: "DELETE" })).status).toBe(403);
     expect((await fetch(deleteUrl, { method: "DELETE", headers: { Origin: base } })).status).toBe(401);
     expect((await fetch(deleteUrl, { method: "DELETE", headers: { Origin: "https://evil.example" } })).status).toBe(403);
-    expect(ok(work, "ls-remote", `${base}/repo10.git`, "refs/heads/topic/x")).toContain(topic);
+    expect(ok(work, "ls-remote", `${base}/fixture10.git`, "refs/heads/topic/x")).toContain(topic);
     expect((await fetch(`${base}/api/session`).then((response) => response.json()))).toEqual({ authenticated: false });
   });
 
   test("data survives a restart of the local runtime", async () => {
-    const before = ok(work, "ls-remote", `${base}/repo3.git`);
+    const before = ok(work, "ls-remote", `${base}/fixture3.git`);
     await stopServer();
     await startServer();
-    expect(ok(work, "ls-remote", `${base}/repo3.git`)).toBe(before);
-    const copy = clone("repo4");
+    expect(ok(work, "ls-remote", `${base}/fixture3.git`)).toBe(before);
+    const copy = clone("fixture4");
     ok(copy, "fsck", "--full");
   }, 60_000);
 });
