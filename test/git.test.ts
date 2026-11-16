@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Subprocess, spawn, spawnSync } from "bun";
@@ -81,8 +81,8 @@ async function startServer() {
   );
   for (let i = 0; i < 120; i++) {
     try {
-      const response = await fetch(`${base}/`);
-      if (response.status === 404) return;
+      const response = await fetch(`${base}/api/session`);
+      if (response.status === 200) return;
     } catch {}
     await Bun.sleep(250);
   }
@@ -317,6 +317,8 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect(await bogus.text()).toContain("not our ref");
 
     expect((await fetch(`${base}/repo11.git/info/refs?service=git-upload-pack`)).status).toBe(404);
+    expect((await fetch(`${base}/repo11/info/refs?service=git-upload-pack`)).status).toBe(404);
+    expect((await fetch(`${base}/repo1.git/HEAD`)).status).toBe(404);
     expect((await fetch(`${base}/repo1.git/info/refs`)).status).toBe(403);
     expect((await fetch(`${base}/repo1.git/git-upload-pack`)).status).toBe(405);
   });
@@ -340,6 +342,73 @@ describe("smart HTTP Git on a Durable Object", () => {
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
     const strip = (refs: string) => refs.split("\n").filter((line) => !line.endsWith("\tHEAD")).join("\n");
     expect(strip(ok(work, "ls-remote", `${base}/repo9.git`))).toBe(strip(ok(work, "ls-remote", source)));
+  });
+
+  test("the browse API reads what Git pushed", async () => {
+    const src = newRepo("repo10");
+    mkdirSync(join(src, "src"));
+    commit(src, "README.md", "# Week\n\n<script>x</script>\n", "Add readme");
+    commit(src, "src/main.c", "int main(void) {\n  return 0;\n}\n", "Add main");
+    const second = commit(src, "src/main.c", "int main(void) {\n  return 1;\n}\n", "Return one");
+    writeFileSync(join(src, "logo.png"), Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"));
+    writeFileSync(join(src, "page.html"), "<script>alert(1)</script>");
+    ok(src, "add", "logo.png", "page.html");
+    ok(src, "commit", "-q", "-m", "Add assets");
+    ok(src, "checkout", "-q", "-b", "topic/x");
+    const topic = commit(src, "topic.txt", "t\n", "Topic work");
+    ok(src, "push", "-q", "origin", "main", "topic/x");
+
+    const api = async (path: string) => {
+      const response = await fetch(`${base}/api/repos/repo10${path}`);
+      return { status: response.status, body: (await response.json()) as any };
+    };
+    const refs = await api("");
+    expect(refs.body.defaultBranch).toBe("main");
+    expect(refs.body.branches.map((ref: { name: string }) => ref.name).sort()).toEqual(["main", "topic/x"]);
+
+    const tree = await api("/tree?ref=main");
+    expect(tree.body.entries.map((entry: { name: string; kind: string }) => [entry.name, entry.kind])).toEqual([
+      ["src", "tree"],
+      ["logo.png", "blob"],
+      ["page.html", "blob"],
+      ["README.md", "blob"],
+    ]);
+    expect(tree.body.entries[0].lastCommit.oid).toBe(second);
+    expect(tree.body.readme).toEqual({ path: "README.md", markdown: true, text: "# Week\n\n<script>x</script>\n" });
+
+    expect((await api("/tree?ref=topic/x")).body.commit.oid).toBe(topic);
+    expect((await api("/tree?ref=main&path=nope")).status).toBe(404);
+    expect((await api("/tree?ref=missing")).status).toBe(404);
+
+    const blob = await api("/blob?ref=main&path=src/main.c");
+    expect(blob.body.content).toEqual({ kind: "text", text: "int main(void) {\n  return 1;\n}\n" });
+    expect((await api("/blob?ref=main&path=logo.png")).body.content).toEqual({ kind: "image", mime: "image/png" });
+
+    const history = await api("/commits?ref=main&path=src/main.c");
+    expect(history.body.commits.map((entry: { subject: string }) => entry.subject)).toEqual(["Return one", "Add main"]);
+    expect(history.body.nextPage).toBeNull();
+
+    const diff = await api(`/commits/${second}`);
+    expect(diff.body.commit.subject).toBe("Return one");
+    expect(diff.body.files).toHaveLength(1);
+    expect(diff.body.files[0]).toMatchObject({ path: "src/main.c", status: "modified", additions: 1, deletions: 1 });
+
+    const html = await fetch(`${base}/api/repos/repo10/raw?ref=main&path=page.html`);
+    expect(html.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+    expect(html.headers.get("Content-Security-Policy")).toContain("sandbox");
+    expect(html.headers.get("X-Content-Type-Options")).toBe("nosniff");
+
+    const page = await fetch(`${base}/repo10/tree/main/src`);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("Content-Type")).toContain("text/html");
+    expect(page.headers.get("Content-Security-Policy")).toContain("script-src 'self'");
+
+    const deleteUrl = `${base}/api/repos/repo10/refs?name=${encodeURIComponent("refs/heads/topic/x")}`;
+    expect((await fetch(deleteUrl, { method: "DELETE" })).status).toBe(403);
+    expect((await fetch(deleteUrl, { method: "DELETE", headers: { Origin: base } })).status).toBe(401);
+    expect((await fetch(deleteUrl, { method: "DELETE", headers: { Origin: "https://evil.example" } })).status).toBe(403);
+    expect(ok(work, "ls-remote", `${base}/repo10.git`, "refs/heads/topic/x")).toContain(topic);
+    expect((await fetch(`${base}/api/session`).then((response) => response.json()))).toEqual({ authenticated: false });
   });
 
   test("data survives a restart of the local runtime", async () => {
