@@ -2,7 +2,6 @@
 Description=Selfgit CI runner
 Wants=network-online.target
 After=network-online.target
-RequiresMountsFor=/var/lib/selfgit-ci-work
 
 [Service]
 ExecStartPre=/usr/bin/mountpoint -q /var/lib/selfgit-ci-work
@@ -10,7 +9,6 @@ ExecStart=/usr/bin/python3 %h/.local/lib/selfgit-ci/runner.py
 Environment=SELFGIT_CI_TOKEN_FILE=%h/.config/selfgit-ci/token
 Restart=always
 RestartSec=15
-NoNewPrivileges=true
 
 [Install]
 WantedBy=default.target
