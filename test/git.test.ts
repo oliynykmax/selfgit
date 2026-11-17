@@ -197,12 +197,8 @@ describe("smart HTTP Git on a Durable Object", () => {
       expect(entered).toBe(true);
       let finished = false;
       const deletion = fetch(`${base}/api/repos/race-delete`, { method: "DELETE", headers: { Origin: base, Cookie: ownerCookie } }).then((response) => { finished = true; return response; });
-      let hidden = false;
-      for (let i = 0; i < 100 && !hidden; i++) {
-        hidden = (await fetch(`${base}/api/repos/race-delete`)).status === 404;
-        if (!hidden) await Bun.sleep(50);
-      }
-      expect(hidden).toBe(true);
+      expect((await fetch(`${base}/__test/deleting`, { signal: AbortSignal.timeout(15_000) })).status).toBe(200);
+      expect((await fetch(`${base}/api/repos/race-delete`, { signal: AbortSignal.timeout(15_000) })).status).toBe(404);
       expect(finished).toBe(false);
       await fetch(`${base}/__test/release`);
       expect((await deletion).status).toBe(200);
@@ -233,12 +229,8 @@ describe("smart HTTP Git on a Durable Object", () => {
       expect(entered).toBe(true);
       let finished = false;
       const deletion = fetch(`${base}/api/repos/race-snapshot`, { method: "DELETE", headers: { Origin: base, Cookie: ownerCookie } }).then((response) => { finished = true; return response; });
-      let hidden = false;
-      for (let i = 0; i < 100 && !hidden; i++) {
-        hidden = (await fetch(`${base}/api/repos/race-snapshot`)).status === 404;
-        if (!hidden) await Bun.sleep(50);
-      }
-      expect(hidden).toBe(true);
+      expect((await fetch(`${base}/__test/deleting?repo=race-snapshot`, { signal: AbortSignal.timeout(15_000) })).status).toBe(200);
+      expect((await fetch(`${base}/api/repos/race-snapshot`, { signal: AbortSignal.timeout(15_000) })).status).toBe(404);
       expect(finished).toBe(false);
       await control("release");
       expect((await tree).status).toBe(200);
