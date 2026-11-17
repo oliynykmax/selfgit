@@ -102,6 +102,19 @@ export async function handleApi(context: ApiContext): Promise<Response> {
   const parts = url.pathname.split("/").slice(2).map(decodeURIComponent);
   const method = request.method === "HEAD" ? "GET" : request.method;
 
+  if (parts[0] === "maintenance" && parts.length === 2 && method === "GET") {
+    const denied = await authorizeOwner(request, auth, identity);
+    if (denied) return denied;
+    const name = parts[1]!;
+    if (!/^(selfgit|repo(?:[1-9]|10)|verify-r2-20261117-a)$/.test(name)) return error(404, "Not found");
+    const after = url.searchParams.get("after");
+    if (after !== null) {
+      if (after !== "" && !/^[0-9a-f]{40}$/.test(after)) return error(400, "Invalid cursor");
+      return json(await env.REPOS.getByName(name).maintenanceHashes(after));
+    }
+    return json(await env.REPOS.getByName(name).maintenanceAudit());
+  }
+
   if (parts[0] === "session" && parts.length === 1 && method === "GET") {
     const user = await currentUser(request, auth);
     const session: Session = user ? { authenticated: true, login: user.login, avatarUrl: user.avatarUrl } : { authenticated: false };

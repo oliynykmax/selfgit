@@ -107,6 +107,22 @@ export class ObjectStore {
     sql.exec(`CREATE TABLE IF NOT EXISTS refs (name TEXT PRIMARY KEY, oid TEXT NOT NULL) WITHOUT ROWID`);
   }
 
+  async auditR2(after: string) {
+    const rows = this.sql.exec<{ oid: string; type: number }>("SELECT oid, type FROM objects WHERE oid > ? ORDER BY oid LIMIT 20", after).toArray();
+    const results: { oid: string; status: "valid" | "missing" | "corrupt" }[] = [];
+    for (const row of rows) {
+      const object = await this.bucket.get(this.key(row.oid));
+      if (!object) { results.push({ oid: row.oid, status: "missing" }); continue; }
+      try {
+        const type = typeFromCode(row.type);
+        if (!type) throw new CorruptObject("invalid type");
+        this.verify(row.oid, type, Buffer.from(await object.arrayBuffer()));
+        results.push({ oid: row.oid, status: "valid" });
+      } catch { results.push({ oid: row.oid, status: "corrupt" }); }
+    }
+    return { results, next: rows.length === 20 ? rows[rows.length - 1]!.oid : null };
+  }
+
   async has(oid: string): Promise<boolean> {
     const row = this.sql.exec<{ in_r2: number }>("SELECT in_r2 FROM objects WHERE oid = ?", oid).toArray()[0];
     if (!row) return false;
