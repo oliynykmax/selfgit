@@ -292,7 +292,7 @@ interface Command {
 /** The subset of check-ref-format rules receive-pack enforces on pushed names. */
 export function validRefName(name: string): boolean {
   if (!name.startsWith("refs/") || name.endsWith("/") || name.endsWith(".") || name.endsWith(".lock")) return false;
-  if (/[\x00-\x20\x7f~^:?*[\\]|\.\.|@\{|\/\/|\/\./.test(name)) return false;
+  if ([...name].some((char) => char <= " " || char === "\x7f") || /[~^:?*[\\]|\.\.|@\{|\/\/|\/\./.test(name)) return false;
   return name.split("/").every((part) => part.length > 0 && !part.startsWith("."));
 }
 

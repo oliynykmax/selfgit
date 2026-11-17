@@ -29,9 +29,10 @@ export function App() {
   const { pathname, search } = useLocation();
   useSignInNotice(search);
   const route = parseRoute(pathname);
+  const title = route.kind === "home" || route.kind === "not-found" ? "git.oliinyk.dev" : `${route.repo} · git.oliinyk.dev`;
   useEffect(() => {
-    document.title = route.kind === "home" || route.kind === "not-found" ? "git.oliinyk.dev" : `${route.repo} · git.oliinyk.dev`;
-  }, [route.kind, route.kind !== "home" && route.kind !== "not-found" ? route.repo : null]);
+    document.title = title;
+  }, [title]);
   return (
     <>
       <Header />

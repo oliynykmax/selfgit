@@ -20,7 +20,7 @@ test("expired leases are reclaimed and cannot write or finish", () => {
   expect(queue.log(first.id, first.leaseToken, "late", first.leaseUntil)).toBe(false);
   expect(queue.finish(first.id, first.leaseToken, true, first.leaseUntil)).toBe(false);
   expect(queue.finish(second.id, second.leaseToken, false, first.leaseUntil)).toBe(true);
-  expect(queue.runs().find((row: any) => row.id === second.id).state).toBe("failed");
+  expect(queue.runs().find((row) => row.id === second.id)?.state).toBe("failed");
   db.close();
 });
 

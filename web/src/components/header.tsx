@@ -69,7 +69,7 @@ export function Header() {
             const next = !dark;
             document.documentElement.classList.toggle("dark", next);
             setDark(next);
-            try { localStorage.setItem("theme", next ? "dark" : "light"); } catch {}
+            try { localStorage.setItem("theme", next ? "dark" : "light"); } catch { /* Storage is blocked, so the choice lasts for this page only. */ }
           }}>
             {dark ? <Sun aria-hidden="true" className="size-4" /> : <Moon aria-hidden="true" className="size-4" />}
           </button>

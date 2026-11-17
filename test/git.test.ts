@@ -77,7 +77,9 @@ async function startServer() {
     try {
       const response = await fetch(`${base}/api/session`);
       if (response.status === 200) return;
-    } catch {}
+    } catch {
+      // Not listening yet.
+    }
     await Bun.sleep(250);
   }
   throw new Error("wrangler dev did not start");
@@ -538,6 +540,7 @@ describe("smart HTTP Git on a Durable Object", () => {
 
     const api = async (path: string) => {
       const response = await fetch(`${base}/api/repos/fixture10${path}`);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { status: response.status, snapshot: response.headers.get("X-Tree-Snapshot"), body: (await response.json()) as any };
     };
     const refs = await api("");
