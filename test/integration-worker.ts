@@ -7,7 +7,28 @@ const worker = createHandler(new GitHubIdentity(async (_url, init) => {
   const token = new Headers(init.headers).get("Authorization");
   return token === "Bearer test-owner-token" ? Response.json({ id: 12345 }) : new Response(null, { status: 401 });
 }));
-export { Registry, Sessions } from "../src/index";
+export { Sessions } from "../src/index";
+import { Registry as BaseRegistry } from "../src/registry";
+
+export class Registry extends BaseRegistry {
+  private readonly deletionWaiters = new Map<string, Array<() => void>>();
+  override beginDelete(name: string): boolean {
+    const result = super.beginDelete(name);
+    if (result) {
+      for (const resolve of this.deletionWaiters.get(name) ?? []) resolve();
+      this.deletionWaiters.delete(name);
+    }
+    return result;
+  }
+  async waitForDeletion(name: string): Promise<void> {
+    if (this.ctx.storage.sql.exec("SELECT 1 FROM repositories WHERE name = ? AND deleting = 1", name).toArray().length > 0) return;
+    await new Promise<void>((resolve) => {
+      const waiters = this.deletionWaiters.get(name) ?? [];
+      waiters.push(resolve);
+      this.deletionWaiters.set(name, waiters);
+    });
+  }
+}
 
 export class Repository extends BaseRepository {
   private controls: { hold: boolean; entered: boolean; releases: Array<() => void> };
@@ -45,6 +66,11 @@ export default {
     const path = new URL(request.url).pathname;
     if (path.startsWith("/__test/")) {
       const repo = env.REPOS.getByName(new URL(request.url).searchParams.get("repo") ?? "race-delete") as unknown as DurableObjectStub<Repository>;
+      if (path === "/__test/deleting") {
+        const registry = env.REGISTRY.getByName("registry") as unknown as DurableObjectStub<Registry>;
+        await registry.waitForDeletion(new URL(request.url).searchParams.get("repo") ?? "race-delete");
+        return new Response("ok");
+      }
       if (path === "/__test/hold") await repo.holdWrites();
       if (path === "/__test/release") await repo.releaseWrites();
       if (path === "/__test/entered") return Response.json(await repo.writeEntered());
