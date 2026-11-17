@@ -1,7 +1,8 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@ui-sdk/react/avatar";
 import { Menu, MenuContent, MenuGroup, MenuGroupLabel, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import { toast } from "@ui-sdk/react/toast";
-import { LogOut } from "lucide-react";
+import { LogOut, Moon, Sun } from "lucide-react";
+import { useState } from "react";
 import type { Session } from "../../../src/api-types";
 import { Link } from "@/components/link";
 import { buttonVariants } from "@/components/ui/button";
@@ -49,6 +50,7 @@ function AccountMenu({ login, avatarUrl }: { login: string; avatarUrl: string })
 
 export function Header() {
   const session = useSession();
+  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
   const { pathname } = useLocation();
   return (
     <header className="border-b bg-background">
@@ -62,7 +64,15 @@ export function Header() {
           </svg>
           git.oliinyk.dev
         </Link>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <button type="button" className={buttonVariants({ variant: "ghost", size: "sm" })} aria-label="Dark theme" aria-pressed={dark} onClick={() => {
+            const next = !dark;
+            document.documentElement.classList.toggle("dark", next);
+            setDark(next);
+            try { localStorage.setItem("theme", next ? "dark" : "light"); } catch {}
+          }}>
+            {dark ? <Sun aria-hidden="true" className="size-4" /> : <Moon aria-hidden="true" className="size-4" />}
+          </button>
           {session?.authenticated ? (
             <AccountMenu login={session.login} avatarUrl={session.avatarUrl} />
           ) : session ? (
