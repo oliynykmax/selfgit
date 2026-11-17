@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { spawn, spawnSync } from "bun";
 
 /**
- * Stock git-http-backend behind a minimal CGI bridge, as the Railway nginx config ran it.
+ * Stock git-http-backend behind a minimal CGI bridge, the reference the Worker must match.
  * Runs as its own process (`bun test/reference.ts <root> <repo>...`) because the tests block on git.
  */
 function serve(root: string, repos: string[]) {
