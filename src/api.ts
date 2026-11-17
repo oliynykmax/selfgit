@@ -2,6 +2,7 @@ import { isRepoName, type RepoName, type Session } from "./api-types";
 import { imageType } from "./browse";
 import { currentUser, type OAuthConfig, sameOrigin } from "./oauth";
 import type { Result } from "./repo";
+import { GitHubIdentity } from "./auth";
 
 const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
 
@@ -38,6 +39,22 @@ interface ApiContext {
   url: URL;
   env: Env;
   auth: OAuthConfig;
+  identity: GitHubIdentity;
+}
+
+export async function authorizeOwner(request: Request, auth: OAuthConfig, identity: GitHubIdentity): Promise<Response | null> {
+  const authorization = request.headers.get("Authorization");
+  if (authorization !== null) {
+    const match = /^Bearer ([^\s]+)$/i.exec(authorization);
+    if (!match) return error(401, "A GitHub bearer token is required");
+    if (!auth.ownerId || !/^\d+$/.test(auth.ownerId)) return error(503, "Owner is not configured");
+    const result = await identity.resolve(match[1]!);
+    if (result === "invalid") return error(401, "GitHub rejected the token");
+    if (result === "unavailable") return error(503, "Could not verify the token with GitHub");
+    return result.userId === Number(auth.ownerId) ? null : error(403, "This GitHub account is not the owner");
+  }
+  if (!sameOrigin(request)) return error(403, "Cross-site request refused");
+  return (await currentUser(request, auth)) ? null : error(401, "Sign in as the owner");
 }
 
 type RepoStub = DurableObjectStub<import("./repo").Repository>;
@@ -72,16 +89,16 @@ const REPO_ROUTES: Record<string, Partial<Record<string, Handler>>> = {
     },
   },
   refs: {
-    DELETE: async ({ request, url, auth }, repo) => {
-      if (!sameOrigin(request)) return error(403, "Cross-site request refused");
-      if (!(await currentUser(request, auth))) return error(401, "Sign in as the owner to delete branches and tags");
+    DELETE: async ({ request, url, auth, identity }, repo) => {
+      const denied = await authorizeOwner(request, auth, identity);
+      if (denied) return denied;
       return fromResult(await repo.deleteRef(param(url, "name")));
     },
   },
 };
 
 export async function handleApi(context: ApiContext): Promise<Response> {
-  const { request, url, env, auth } = context;
+  const { request, url, env, auth, identity } = context;
   const parts = url.pathname.split("/").slice(2).map(decodeURIComponent);
   const method = request.method === "HEAD" ? "GET" : request.method;
 
@@ -98,8 +115,8 @@ export async function handleApi(context: ApiContext): Promise<Response> {
     return json(summaries.flatMap((result) => (result.ok ? [result.value] : [])));
   }
   if (parts[0] === "repos" && parts.length === 1 && method === "POST") {
-    if (!sameOrigin(request)) return error(403, "Cross-site request refused");
-    if (!(await currentUser(request, auth))) return error(401, "Sign in as the owner");
+    const denied = await authorizeOwner(request, auth, identity);
+    if (denied) return denied;
     const body: unknown = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || !("name" in body) || typeof body.name !== "string" || !isRepoName(body.name))
       return error(400, "Use lowercase letters, numbers, dots, hyphens or underscores. Names must begin with a letter or number, and cannot end in a dot or .git.");
