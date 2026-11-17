@@ -17,9 +17,9 @@ with tempfile.NamedTemporaryFile(mode='w') as token:
 class RunnerTest(unittest.TestCase):
     def test_failure_and_secret_redaction(self):
         with tempfile.TemporaryDirectory() as directory:
-            podman = Path(directory) / 'podman'
-            podman.write_text('#!/bin/sh\nif [ "$1" = run ]; then printf sensitive-; sleep 0.1; printf "token lease-secret\\n"; exit 1; fi\n')
-            podman.chmod(0o755)
+            proot = Path(directory) / 'proot-distro'
+            proot.write_text('#!/bin/sh\nif [ "$1" = login ]; then printf sensitive-; sleep 0.1; printf "token lease-secret\\n"; exit 1; fi\n')
+            proot.chmod(0o755)
             calls = []
             def request(endpoint, body):
                 calls.append((endpoint, body))
@@ -33,9 +33,9 @@ class RunnerTest(unittest.TestCase):
 
     def test_heartbeat_during_job(self):
         with tempfile.TemporaryDirectory() as directory:
-            podman = Path(directory) / 'podman'
-            podman.write_text('#!/bin/sh\nif [ "$1" = run ]; then sleep 1.2; fi\n')
-            podman.chmod(0o755)
+            proot = Path(directory) / 'proot-distro'
+            proot.write_text('#!/bin/sh\nif [ "$1" = login ]; then sleep 1.2; fi\n')
+            proot.chmod(0o755)
             calls = []
             def request(endpoint, body):
                 calls.append(endpoint)

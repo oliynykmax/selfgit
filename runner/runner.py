@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-job selfgit CI worker. The container never receives runner credentials."""
+"""Single-job selfgit CI worker. Jobs run in an isolated proot Debian guest that never sees runner credentials."""
 import json
 import os
 import re
@@ -13,7 +13,8 @@ import urllib.request
 
 API = os.environ.get('SELFGIT_CI_API', 'https://git.oliinyk.dev')
 TOKEN = open(os.environ['SELFGIT_CI_TOKEN_FILE'], encoding='utf-8').read().strip()
-IMAGE = os.environ.get('SELFGIT_CI_IMAGE', 'localhost/selfgit-ci:latest')
+DISTRO = os.environ.get('SELFGIT_CI_DISTRO', 'debian')
+WORKERD_RELEASES = 'https://github.com/oliynykmax/workerd-arm64-39bit/releases/download'
 TIMEOUT = 1200
 LOG_LIMIT = 60000
 HEARTBEAT_INTERVAL = 60
@@ -32,7 +33,6 @@ def execute(job):
     if job.get('kind') != 'ci' or not re.fullmatch(r'[0-9a-f]{40}', job.get('commit', '')):
         raise ValueError('Invalid CI job')
     lease = {'id': job['id'], 'leaseToken': job['leaseToken']}
-    name = 'selfgit-ci-' + str(job['id'])
     script = '''set -eu
 export HOME=/tmp/home TMPDIR=/tmp
 mkdir -p "$HOME" /tmp/work
@@ -42,15 +42,15 @@ git remote add origin https://git.oliinyk.dev/selfgit.git
 git fetch --depth=1 origin "$1"
 git checkout --detach FETCH_HEAD
 test "$(git rev-parse HEAD)" = "$1"
-for command in 'bun install --frozen-lockfile' 'bun run typecheck' 'bun run test:ci' 'bun run build'; do
-  printf '\\n$ %s\\n' "$command"
-  sh -c "$command"
-done
+run() { printf '\\n$ %s\\n' "$1"; sh -c "$1"; }
+run 'bun install --frozen-lockfile'
+export MINIFLARE_WORKERD_PATH="/opt/workerd/$(node -p 'require("workerd/package.json").version')"
+test -x "$MINIFLARE_WORKERD_PATH" || run "curl -fsSL $2/v${MINIFLARE_WORKERD_PATH##*/}/workerd.gz | gunzip > $MINIFLARE_WORKERD_PATH.part && chmod 755 $MINIFLARE_WORKERD_PATH.part && mv $MINIFLARE_WORKERD_PATH.part $MINIFLARE_WORKERD_PATH"
+run 'bun run ci'
 '''
-    workspace = tempfile.TemporaryDirectory(prefix='job-', dir=os.environ.get('SELFGIT_CI_WORKDIR', '/var/lib/selfgit-ci-work'))
-    cmd = ['podman', 'run', '--rm', '--name', name, '--memory=650m', '--memory-swap=768m',
-           '--cpus=1', '--pids-limit=256', '--read-only', '--volume', workspace.name + ':/tmp:rw',
-           '--cap-drop=all', '--security-opt=no-new-privileges', IMAGE, 'sh', '-c', script, 'ci', job['commit']]
+    workspace = tempfile.TemporaryDirectory(prefix='job-', dir=os.environ.get('SELFGIT_CI_WORKDIR', os.path.expanduser('~/ci-work')))
+    cmd = ['proot-distro', 'login', DISTRO, '--isolated', '--bind', workspace.name + ':/tmp', '--',
+           'sh', '-c', script, 'ci', job['commit'], WORKERD_RELEASES]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     selector = selectors.DefaultSelector()
     selector.register(proc.stdout, selectors.EVENT_READ)
@@ -92,7 +92,6 @@ done
                 pass
         raise
     finally:
-        subprocess.run(['podman', 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
         if proc.poll() is None:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
