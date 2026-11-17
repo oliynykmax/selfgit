@@ -1,7 +1,12 @@
-import worker from "../src/index";
+import { createHandler } from "../src/index";
+import { GitHubIdentity } from "../src/auth";
 import { finishLogin, startLogin, type OAuthConfig } from "../src/oauth";
 
 import { Repository as BaseRepository } from "../src/repo";
+const worker = createHandler(new GitHubIdentity(async (_url, init) => {
+  const token = new Headers(init.headers).get("Authorization");
+  return token === "Bearer test-owner-token" ? Response.json({ id: 12345 }) : new Response(null, { status: 401 });
+}));
 export { Registry, Sessions } from "../src/index";
 
 export class Repository extends BaseRepository {

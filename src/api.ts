@@ -1,3 +1,4 @@
+import { PIPELINE_REPO } from "./ci";
 import { isRepoName, type RepoName, type Session } from "./api-types";
 import { imageType } from "./browse";
 import { currentUser, type OAuthConfig, sameOrigin } from "./oauth";
@@ -150,6 +151,7 @@ export async function handleApi(context: ApiContext): Promise<Response> {
   if (parts[0] === "repos" && parts.length >= 2) {
     const name = parts[1]!;
     if (parts.length === 2 && method === "DELETE") {
+      if (name === PIPELINE_REPO) return error(409, "The pipeline repository cannot be deleted");
       const denied = await authorizeOwner(request, auth, identity);
       if (denied) return denied;
       if (!isRepoName(name) || !(await env.REGISTRY.getByName("registry").beginDelete(name))) return error(404, `No repository named ${name}`);
@@ -157,6 +159,7 @@ export async function handleApi(context: ApiContext): Promise<Response> {
       return json(null);
     }
     if (!isRepoName(name) || !(await env.REGISTRY.getByName("registry").exists(name))) return error(404, `No repository named ${name}`);
+    if (name === PIPELINE_REPO && parts.length === 3 && parts[2] === "runs" && method === "GET") return json(await stub(env, name).ciRuns());
     const [section = "", ...rest] = parts.slice(2);
     const route = REPO_ROUTES[section];
     if (!route || rest.length > (section === "commits" ? 1 : 0)) return error(404, "Not found");

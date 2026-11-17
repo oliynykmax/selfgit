@@ -1,3 +1,4 @@
+import { CiQueue, MAIN, PIPELINE_REPO, type JobKind } from "./ci";
 import { Buffer } from "node:buffer";
 import { DurableObject } from "cloudflare:workers";
 import type { RepoName } from "./api-types";
@@ -21,6 +22,8 @@ export type Result<T> = { ok: true; value: T } | { ok: false; status: 400 | 404 
 /** One bare repository: objects and refs in this Durable Object's SQLite storage. */
 export class Repository extends DurableObject<Env> {
   private readonly store = new ObjectStore(this.ctx.storage.sql, this.env.OBJECTS, this.ctx.id.toString());
+
+  private readonly ci = new CiQueue(this.ctx.storage.sql);
 
   private pending: Promise<void> = Promise.resolve();
 
@@ -96,7 +99,13 @@ export class Repository extends DurableObject<Env> {
       const result =
         service === "git-upload-pack"
           ? await uploadPack(this.store, body)
-          : await receivePack(this.store, (fn) => this.ctx.storage.transactionSync(fn), body);
+          : await receivePack(this.store, (fn) => this.ctx.storage.transactionSync(fn), body, (ref, oid) => {
+              const name = url.pathname.split("/")[1]?.replace(/\.git$/, "");
+              if (name === PIPELINE_REPO && ref === MAIN) {
+                if (oid === ZERO_OID) throw new ProtocolError("Pipeline main cannot be deleted");
+                this.ci.enqueue(oid);
+              }
+            });
       return new Response(result, { headers: { "Content-Type": `application/x-${service}-result`, ...NO_CACHE } });
     } catch (error) {
       if (error instanceof ProtocolError || error instanceof CorruptObject) {
@@ -117,6 +126,12 @@ export class Repository extends DurableObject<Env> {
       }
     });
   }
+
+  ciClaim(kind: JobKind) { return this.ctx.storage.transactionSync(() => this.deleted() ? null : this.ci.claim(kind, Date.now())); }
+  ciLog(id: number, token: string, text: string) { return !this.deleted() && this.ci.log(id, token, text, Date.now()); }
+  ciHeartbeat(id: number, token: string) { return !this.deleted() && this.ci.heartbeat(id, token, Date.now()); }
+  ciFinish(id: number, token: string, success: boolean) { return !this.deleted() && this.ci.finish(id, token, success, Date.now()); }
+  ciRuns() { return this.deleted() ? [] : this.ci.runs(); }
 
   summary(name: RepoName) {
     return this.browse((browser) => browser.summary(name));

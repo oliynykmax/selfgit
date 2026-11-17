@@ -1,24 +1,18 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Subprocess, spawn, spawnSync } from "bun";
 
-function ghOutput(...args: string[]): string {
-  const result = spawnSync(["gh", ...args], { stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== 0) throw new Error(`gh ${args[0]} ${args[1]} failed; the push tests need a logged-in gh CLI`);
-  return result.stdout.toString().trim();
-}
-
-const TOKEN = process.env.GH_TOKEN || ghOutput("auth", "token", "--hostname", "github.com");
-const OWNER_ID = ghOutput("api", "user", "--jq", ".id");
+const TOKEN = "test-owner-token";
+const OWNER_ID = "12345";
 const ROOT = join(import.meta.dir, "..");
 const work = mkdtempSync(join(tmpdir(), "selfgit-test-"));
 const state = join(work, "state");
 const port = 20000 + Math.floor(Math.random() * 20000);
 const base = `http://127.0.0.1:${port}`;
-const GH_HELPER = '!f() { test "$1" = get && echo username=git && echo "password=$(gh auth token --hostname github.com)"; }; f';
+const GH_HELPER = '!f() { test "$1" = get && echo username=git && echo password=test-owner-token; }; f';
 let server: Subprocess | undefined;
 let ownerCookie = "";
 
@@ -32,7 +26,6 @@ const gitEnv = {
   GIT_AUTHOR_EMAIL: "student@example.com",
   GIT_COMMITTER_NAME: "Student",
   GIT_COMMITTER_EMAIL: "student@example.com",
-  GH_TOKEN: TOKEN,
 };
 writeFileSync(
   join(work, "gitconfig"),
@@ -77,7 +70,7 @@ function clone(remote: string, ...args: string[]): string {
 
 async function startServer() {
   server = spawn(
-    [join(ROOT, "node_modules/.bin/wrangler"), "dev", join(ROOT, "test/integration-worker.ts"), "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `GITHUB_OWNER_ID:${OWNER_ID}`, "--var", "GITHUB_OAUTH_CLIENT_ID:test-client", "--var", "GITHUB_OAUTH_CLIENT_SECRET:test-secret", "--log-level", "warn"],
+    [join(ROOT, "node_modules/.bin/wrangler"), "dev", join(ROOT, "test/integration-worker.ts"), "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `GITHUB_OWNER_ID:${OWNER_ID}`, "--var", "GITHUB_OAUTH_CLIENT_ID:test-client", "--var", "GITHUB_OAUTH_CLIENT_SECRET:test-secret", "--var", `CI_RUNNER_TOKEN_HASH:${createHash("sha256").update("test-runner-secret").digest("hex")}`, "--log-level", "warn"],
     { cwd: ROOT, stdout: "ignore", stderr: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
   );
   for (let i = 0; i < 120; i++) {
@@ -123,6 +116,34 @@ afterAll(async () => {
 });
 
 describe("smart HTTP Git on a Durable Object", () => {
+  test("accepted main pushes persist independent runner jobs", async () => {
+    expect((await createRepo("selfgit")).status).toBe(201);
+    const src = newRepo("selfgit");
+    const first = commit(src, "queue.txt", "one");
+    ok(src, "push", "-q", "origin", "main");
+    ok(src, "push", "-q", "origin", "main");
+    const runs = async () => await (await fetch(`${base}/api/repos/selfgit/runs`)).json();
+    expect((await runs()).length).toBe(2);
+    await stopServer();
+    await startServer();
+    expect((await runs()).length).toBe(2);
+    const runner = (route: string, body: object, token = "test-runner-secret") => fetch(`${base}/api/runner/${route}`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+    expect((await runner("claim", { kind: "ci" }, "bad")).status).toBe(401);
+    const ci = await (await runner("claim", { kind: "ci" })).json();
+    expect(ci.commit).toBe(first);
+    expect(await (await runner("heartbeat", { id: ci.id, leaseToken: "stale" })).json()).toEqual({ ok: false });
+    expect(await (await runner("heartbeat", { id: ci.id, leaseToken: ci.leaseToken })).json()).toEqual({ ok: true });
+    expect(await (await runner("finish", { id: ci.id, leaseToken: "stale", success: true })).json()).toEqual({ ok: false });
+    expect(await (await runner("log", { id: ci.id, leaseToken: ci.leaseToken, text: "test failed" })).json()).toEqual({ ok: true });
+    expect(await (await runner("finish", { id: ci.id, leaseToken: ci.leaseToken, success: false })).json()).toEqual({ ok: true });
+    expect((await runner("claim", { kind: "backup" })).status).toBe(400);
+    expect((await runs()).some((job: { kind: string; state: string }) => job.kind === "backup" && job.state === "queued")).toBe(true);
+    const second = commit(src, "queue.txt", "two");
+    ok(src, "push", "-q", "origin", "main");
+    expect((await (await runner("claim", { kind: "ci" })).json()).commit).toBe(second);
+    expect((await runs()).find((job: { id: number }) => job.id === ci.id).state).toBe("failed");
+  });
+
   test("maintenance audit requires owner and only accepts named targets", async () => {
     const path = `${base}/api/maintenance/repo1`;
     expect((await fetch(path)).status).toBe(403);
@@ -259,7 +280,7 @@ describe("smart HTTP Git on a Durable Object", () => {
     ok(copy, "fsck", "--full", "--strict");
   });
 
-  test("push requires the owner's GitHub token through the gh helper; reads stay public", async () => {
+  test("push requires the owner's token through a credential helper; reads stay public", async () => {
     const src = newRepo("fixture2");
     commit(src, "f.txt", "x\n");
     const anonymous = git(src, "-c", `credential.${base}.helper=`, "push", "origin", "main");
@@ -496,8 +517,11 @@ describe("smart HTTP Git on a Durable Object", () => {
     ok(src, "tag", "-a", "submitted", "-m", "done");
     ok(src, "push", "-q", "--mirror", source);
 
+    const fakeBin = join(work, "fake-bin");
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(join(fakeBin, "gh"), "#!/bin/sh\nprintf '%s\\n' test-owner-token\n", { mode: 0o755 });
     const result = spawnSync(["sh", join(ROOT, "scripts/transfer.sh"), `file://${work}`, base], {
-      env: { ...gitEnv, SELFGIT_REPOS: "old-server:fixture9" },
+      env: { ...gitEnv, PATH: `${fakeBin}:${process.env.PATH}`, SELFGIT_REPOS: "old-server:fixture9" },
       stdout: "pipe",
       stderr: "pipe",
     });
