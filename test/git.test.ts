@@ -220,6 +220,27 @@ describe("smart HTTP Git on a Durable Object", () => {
     ok(copy, "fsck", "--full");
   });
 
+  test("competing pushes cannot both replace the same ref", async () => {
+    expect((await createRepo("concurrent-pushes")).status).toBe(201);
+    const first = newRepo("concurrent-pushes");
+    commit(first, "base.txt", "base\n");
+    ok(first, "push", "-q", "origin", "main");
+    const second = clone("concurrent-pushes");
+    const old = ok(first, "rev-parse", "HEAD");
+    const firstHead = commit(first, "first.txt", "first\n");
+    const secondHead = commit(second, "second.txt", "second\n");
+    const push = (cwd: string) => spawn(["git", "push", `--force-with-lease=refs/heads/main:${old}`, "origin", "main"], {
+      cwd, env: gitEnv, stdout: "pipe", stderr: "pipe",
+    });
+    const a = push(first);
+    const b = push(second);
+    const codes = await Promise.all([a.exited, b.exited]);
+    expect(codes.filter((code) => code === 0)).toHaveLength(1);
+    const copy = clone("concurrent-pushes");
+    expect([firstHead, secondHead]).toContain(ok(copy, "rev-parse", "HEAD"));
+    ok(copy, "fsck", "--full", "--strict");
+  });
+
   test("large binary objects split across storage rows", () => {
     const src = newRepo("fixture4");
     const big = randomBytes(5 * 1024 * 1024 + 123);

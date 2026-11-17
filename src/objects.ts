@@ -7,9 +7,6 @@ export type ObjectType = (typeof OBJECT_TYPES)[number];
 export const TYPE_CODE: Record<ObjectType, number> = { commit: 1, tree: 2, blob: 3, tag: 4 };
 export const ZERO_OID = "0".repeat(40);
 
-/** Durable Object SQLite rows max out at 8 MB; stored zlib data is split well below that. */
-const CHUNK_BYTES = 1 << 20;
-
 export class CorruptObject extends Error {}
 
 export interface ObjectInfo {
@@ -81,7 +78,7 @@ interface ObjectRow extends Record<string, SqlStorageValue> {
 }
 
 export class ObjectStore {
-  constructor(private readonly sql: SqlStorage) {
+  constructor(private readonly sql: SqlStorage, private readonly bucket: R2Bucket, private readonly repoId: string) {
     sql.exec(`CREATE TABLE IF NOT EXISTS objects (
       oid TEXT PRIMARY KEY,
       type INTEGER NOT NULL,
@@ -95,11 +92,15 @@ export class ObjectStore {
       data BLOB NOT NULL,
       PRIMARY KEY (oid, seq)
     ) WITHOUT ROWID`);
+    const columns = sql.exec<{ name: string }>("PRAGMA table_info(objects)").toArray();
+    if (!columns.some((column) => column.name === "in_r2")) sql.exec("ALTER TABLE objects ADD COLUMN in_r2 INTEGER NOT NULL DEFAULT 0");
     sql.exec(`CREATE TABLE IF NOT EXISTS refs (name TEXT PRIMARY KEY, oid TEXT NOT NULL) WITHOUT ROWID`);
   }
 
-  has(oid: string): boolean {
-    return this.sql.exec("SELECT 1 FROM objects WHERE oid = ?", oid).toArray().length > 0;
+  async has(oid: string): Promise<boolean> {
+    const row = this.sql.exec<{ in_r2: number }>("SELECT in_r2 FROM objects WHERE oid = ?", oid).toArray()[0];
+    if (!row) return false;
+    return !row.in_r2 || (await this.bucket.head(this.key(oid))) !== null;
   }
 
   info(oid: string): ObjectInfo | null {
@@ -108,47 +109,54 @@ export class ObjectStore {
     return { type: typeFromCode(row.type)!, size: row.size, links: row.links ? row.links.split(" ") : [] };
   }
 
-  /** The object's zlib stream, exactly as a non-delta pack entry carries it. */
-  *zdata(oid: string): Generator<Buffer> {
-    const row = this.sql.exec<{ zdata: ArrayBuffer | null }>("SELECT zdata FROM objects WHERE oid = ?", oid).toArray()[0];
-    if (!row) throw new CorruptObject(`missing object ${oid}`);
-    if (row.zdata) {
-      yield Buffer.from(row.zdata);
-      return;
-    }
-    for (const chunk of this.sql.exec<{ data: ArrayBuffer }>(
-      "SELECT data FROM object_chunks WHERE oid = ? ORDER BY seq",
-      oid,
-    )) {
-      yield Buffer.from(chunk.data);
-    }
+  private key(oid: string): string {
+    return `${this.repoId}/${oid}`;
   }
 
-  read(oid: string): { type: ObjectType; content: Buffer } | null {
+  /** Reads legacy SQLite payloads and migrates them only after verifying the R2 copy. */
+  async zdata(oid: string): Promise<Buffer> {
+    const row = this.sql.exec<{ zdata: ArrayBuffer | null; in_r2: number }>("SELECT zdata, in_r2 FROM objects WHERE oid = ?", oid).toArray()[0];
+    if (!row) throw new CorruptObject(`missing object ${oid}`);
+    const info = this.info(oid)!;
+    if (row.in_r2) {
+      const object = await this.bucket.get(this.key(oid));
+      if (!object) throw new CorruptObject(`missing R2 object ${oid}`);
+      const data = Buffer.from(await object.arrayBuffer());
+      this.verify(oid, info.type, data);
+      return data;
+    }
+    const data = row.zdata ? Buffer.from(row.zdata) : Buffer.concat(this.sql.exec<{ data: ArrayBuffer }>(
+      "SELECT data FROM object_chunks WHERE oid = ? ORDER BY seq", oid,
+    ).toArray().map((chunk) => Buffer.from(chunk.data)));
+    this.verify(oid, info.type, data);
+    await this.bucket.put(this.key(oid), data);
+    const copy = await this.bucket.get(this.key(oid));
+    if (!copy) throw new CorruptObject(`missing R2 object ${oid} after upload`);
+    this.verify(oid, info.type, Buffer.from(await copy.arrayBuffer()));
+    this.sql.exec("UPDATE objects SET in_r2 = 1 WHERE oid = ?", oid);
+    return data;
+  }
+
+  private verify(oid: string, type: ObjectType, data: Uint8Array): void {
+    let content: Buffer;
+    try { content = inflateSync(data); } catch { throw new CorruptObject(`invalid compressed object ${oid}`); }
+    if (hashObject(type, content) !== oid) throw new CorruptObject(`object hash mismatch ${oid}`);
+  }
+
+  async read(oid: string): Promise<{ type: ObjectType; content: Buffer } | null> {
     const info = this.info(oid);
     if (!info) return null;
-    return { type: info.type, content: inflateSync(Buffer.concat([...this.zdata(oid)])) };
+    return { type: info.type, content: inflateSync(await this.zdata(oid)) };
   }
 
-  /** Stores an object unless present. Returns true when the object is new. */
-  put(oid: string, type: ObjectType, content: Buffer, zdata: Uint8Array): boolean {
-    if (this.has(oid)) return false;
+  async put(oid: string, type: ObjectType, content: Buffer, zdata: Uint8Array): Promise<boolean> {
+    if (hashObject(type, content) !== oid) throw new CorruptObject(`object hash mismatch ${oid}`);
+    this.verify(oid, type, zdata);
+    if (await this.has(oid)) return false;
     const links = parseLinks(type, content).join(" ");
-    const inline = zdata.length <= CHUNK_BYTES;
-    this.sql.exec(
-      "INSERT INTO objects (oid, type, size, links, zdata) VALUES (?, ?, ?, ?, ?)",
-      oid,
-      TYPE_CODE[type],
-      content.length,
-      links,
-      inline ? zdata : null,
-    );
-    if (!inline) {
-      for (let seq = 0; seq * CHUNK_BYTES < zdata.length; seq++) {
-        const part = zdata.subarray(seq * CHUNK_BYTES, (seq + 1) * CHUNK_BYTES);
-        this.sql.exec("INSERT INTO object_chunks (oid, seq, data) VALUES (?, ?, ?)", oid, seq, part);
-      }
-    }
+    await this.bucket.put(this.key(oid), zdata);
+    this.sql.exec("INSERT OR IGNORE INTO objects (oid, type, size, links, zdata, in_r2) VALUES (?, ?, ?, ?, NULL, 1)",
+      oid, TYPE_CODE[type], content.length, links);
     return true;
   }
 
