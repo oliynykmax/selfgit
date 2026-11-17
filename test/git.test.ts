@@ -123,6 +123,11 @@ afterAll(async () => {
 });
 
 describe("smart HTTP Git on a Durable Object", () => {
+  test("management API accepts the owner's GitHub bearer token without a browser session", async () => {
+    expect((await createRepo("bearer-repo", { Authorization: `Bearer ${TOKEN}` })).status).toBe(201);
+    expect((await createRepo("invalid-bearer", { Authorization: "Bearer invalid-token" })).status).toBe(401);
+    expect((await fetch(`${base}/api/repos/bearer-repo`)).status).toBe(200);
+  });
   test("repository creation requires the owner and a same-origin request", async () => {
     expect((await createRepo("anonymous", { Origin: base })).status).toBe(401);
     expect((await createRepo("cross-site", { Origin: "https://evil.example", Cookie: ownerCookie })).status).toBe(403);

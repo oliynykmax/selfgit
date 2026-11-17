@@ -27,6 +27,8 @@ The first line empties the helper list for `https://git.oliinyk.dev`, so a globa
 
 The token is fetched fresh on every push and never written to disk by Git. Clone and fetch send no credentials.
 
+The repository creation and ref deletion API also accepts an explicit `Authorization: Bearer <GitHub token>` header. It checks the same owner ID as Git pushes. Requests authenticated by the browser session must come from the same origin. An invalid authorization header never falls back to a browser session.
+
 Shallow clones (`--depth`, `fetch --depth`, `--unshallow`), tags, branch deletion, force pushes, and atomic pushes work as they do against stock `git-http-backend`.
 
 ## Deploy

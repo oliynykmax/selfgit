@@ -76,7 +76,7 @@ export default {
     if (url.pathname === LOGIN_PATH) return startLogin(request, auth);
     if (url.pathname === CALLBACK_PATH) return finishLogin(request, auth);
     if (url.pathname === LOGOUT_PATH) return logout(request, auth);
-    if (url.pathname.startsWith("/api/")) return handleApi({ request, url, env, auth });
+    if (url.pathname.startsWith("/api/")) return handleApi({ request, url, env, auth, identity });
     return page(request, env);
   },
 } satisfies ExportedHandler<Env>;
