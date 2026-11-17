@@ -71,7 +71,7 @@ function clone(remote: string, ...args: string[]): string {
 async function startServer() {
   server = spawn(
     [join(ROOT, "node_modules/.bin/wrangler"), "dev", join(ROOT, "test/integration-worker.ts"), "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `GITHUB_OWNER_ID:${OWNER_ID}`, "--var", "GITHUB_OAUTH_CLIENT_ID:test-client", "--var", "GITHUB_OAUTH_CLIENT_SECRET:test-secret", "--var", `CI_RUNNER_TOKEN_HASH:${createHash("sha256").update("test-runner-secret").digest("hex")}`, "--log-level", "warn"],
-    { cwd: ROOT, stdout: "ignore", stderr: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
+    { cwd: ROOT, stdout: "ignore", stderr: "ignore", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
   );
   for (let i = 0; i < 120; i++) {
     try {
