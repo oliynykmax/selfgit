@@ -299,7 +299,7 @@ export function validRefName(name: string): boolean {
 /** A pushed object links to something neither the pack nor the repo holds. */
 class MissingObjects extends Error {}
 
-export async function receivePack(store: ObjectStore, transaction: (fn: () => void) => void, body: Buffer): Promise<Buffer> {
+export async function receivePack(store: ObjectStore, transaction: (fn: () => void) => void, body: Buffer, onUpdate?: (ref: string, oid: string) => void): Promise<Buffer> {
   const reader = new PktReader(body);
   const commands: Command[] = [];
   let caps = new Set<string>();
@@ -342,7 +342,10 @@ export async function receivePack(store: ObjectStore, transaction: (fn: () => vo
         for (const [ref, result] of results) if (result === "ok") results.set(ref, "atomic push failed");
         return;
       }
-      for (const command of commands) if (results.get(command.ref) === "ok") store.setRef(command.ref, command.new);
+      for (const command of commands) if (results.get(command.ref) === "ok") {
+        store.setRef(command.ref, command.new);
+        if (command.old !== command.new) onUpdate?.(command.ref, command.new);
+      }
     });
   } catch (error) {
     if (error instanceof MissingObjects) {
