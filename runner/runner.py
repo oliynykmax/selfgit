@@ -42,7 +42,7 @@ git remote add origin https://git.oliinyk.dev/selfgit.git
 git fetch --depth=1 origin "$1"
 git checkout --detach FETCH_HEAD
 test "$(git rev-parse HEAD)" = "$1"
-for command in 'bun install --frozen-lockfile' 'bun run typecheck' 'bun run test' 'bun run build'; do
+for command in 'bun install --frozen-lockfile' 'bun run typecheck' 'bun run test:ci' 'bun run build'; do
   printf '\\n$ %s\\n' "$command"
   sh -c "$command"
 done

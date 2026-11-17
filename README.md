@@ -97,6 +97,8 @@ bun run typecheck
 bun run test
 ```
 
+`bun run test` runs everything, including the `wrangler dev` integration suite in `test/git.test.ts`. The self-hosted CI runner is a 1/8-OCPU Oracle micro VM that the hypervisor throttles heavily (15-30% CPU steal), and workerd stalls at random under that suite, so CI runs `bun run test:ci`, which skips `test/git.test.ts`. Run the full `bun run test` on a normal machine before pushing changes to the Git protocol or Durable Objects.
+
 `test/auth.test.ts` checks push authorization against a fake GitHub: owner, other account, rejected and missing tokens, outages, redirects, and caching. `test/git.test.ts` needs a logged-in `gh` (or `GH_TOKEN`), because its pushes verify a real token with GitHub through the credential helper above. It starts `wrangler dev` with persisted local state and drives it with the real `git` CLI: clone, push, fetch, thin packs with deltas, multi-megabyte binaries, tags, deletes, force and atomic pushes, gzip request bodies, the transfer script, and a runtime restart to prove persistence. The shallow-clone test runs the same steps against stock `git-http-backend` (`test/reference.ts`) and requires identical results.
 
 Source layout:
