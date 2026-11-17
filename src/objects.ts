@@ -87,7 +87,20 @@ export async function deleteRepoObjects(bucket: R2Bucket, repoId: string): Promi
   } while (cursor);
 }
 
+const READ_CACHE_BYTES = 4 * 1024 * 1024;
+const READ_CACHE_ENTRY_BYTES = 256 * 1024;
+const READ_CACHE_ENTRY_OVERHEAD = 512;
+
 export class ObjectStore {
+  private readonly readCache = new Map<string, { type: ObjectType; content: Buffer }>();
+  private readonly reads = new Map<string, Promise<{ type: ObjectType; content: Buffer } | null>>();
+  private readCacheBytes = 0;
+
+  clearReadCache(): void {
+    this.readCache.clear();
+    this.readCacheBytes = 0;
+  }
+
   constructor(private readonly sql: SqlStorage, private readonly bucket: R2Bucket, private readonly repoId: string) {
     sql.exec(`CREATE TABLE IF NOT EXISTS objects (
       oid TEXT PRIMARY KEY,
@@ -170,9 +183,32 @@ export class ObjectStore {
   }
 
   async read(oid: string): Promise<{ type: ObjectType; content: Buffer } | null> {
-    const info = this.info(oid);
-    if (!info) return null;
-    return { type: info.type, content: inflateSync(await this.zdata(oid)) };
+    const cached = this.readCache.get(oid);
+    if (cached) {
+      this.readCache.delete(oid);
+      this.readCache.set(oid, cached);
+      return cached;
+    }
+    const pending = this.reads.get(oid);
+    if (pending) return pending;
+    const load = (async () => {
+      const info = this.info(oid);
+      if (!info) return null;
+      const object = { type: info.type, content: inflateSync(await this.zdata(oid)) };
+      if ((info.type === "commit" || info.type === "tree") && object.content.length <= READ_CACHE_ENTRY_BYTES) {
+        while (this.readCacheBytes + object.content.length + READ_CACHE_ENTRY_OVERHEAD > READ_CACHE_BYTES) {
+          const oldest = this.readCache.keys().next().value;
+          if (oldest === undefined) break;
+          this.readCacheBytes -= this.readCache.get(oldest)!.content.length + READ_CACHE_ENTRY_OVERHEAD;
+          this.readCache.delete(oldest);
+        }
+        this.readCache.set(oid, object);
+        this.readCacheBytes += object.content.length + READ_CACHE_ENTRY_OVERHEAD;
+      }
+      return object;
+    })();
+    this.reads.set(oid, load);
+    try { return await load; } finally { this.reads.delete(oid); }
   }
 
   async put(oid: string, type: ObjectType, content: Buffer, zdata: Uint8Array): Promise<boolean> {
