@@ -110,7 +110,7 @@ export async function handleApi(context: ApiContext): Promise<Response> {
   if (parts[0] === "repos" && parts.length === 1 && method === "GET") {
     const names = await env.REGISTRY.getByName("registry").list();
     const summaries = await Promise.all(names.map(async (name) => stub(env, name).summary(name)));
-    const failed = summaries.find((result) => !result.ok);
+    const failed = summaries.find((result) => !result.ok && result.status !== 404);
     if (failed && !failed.ok) return error(failed.status, failed.error);
     return json(summaries.flatMap((result) => (result.ok ? [result.value] : [])));
   }
@@ -125,6 +125,13 @@ export async function handleApi(context: ApiContext): Promise<Response> {
   }
   if (parts[0] === "repos" && parts.length >= 2) {
     const name = parts[1]!;
+    if (parts.length === 2 && method === "DELETE") {
+      const denied = await authorizeOwner(request, auth, identity);
+      if (denied) return denied;
+      if (!isRepoName(name) || !(await env.REGISTRY.getByName("registry").beginDelete(name))) return error(404, `No repository named ${name}`);
+      await stub(env, name).deleteRepository();
+      return json(null);
+    }
     if (!isRepoName(name) || !(await env.REGISTRY.getByName("registry").exists(name))) return error(404, `No repository named ${name}`);
     const [section = "", ...rest] = parts.slice(2);
     const route = REPO_ROUTES[section];

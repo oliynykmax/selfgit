@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { DurableObject } from "cloudflare:workers";
 import type { RepoName } from "./api-types";
 import { Browser, NotFound } from "./browse";
-import { CorruptObject, ObjectStore, ZERO_OID } from "./objects";
+import { CorruptObject, deleteRepoObjects, ObjectStore, ZERO_OID } from "./objects";
 import { ProtocolError } from "./pktline";
 import { advertise, headTarget, receivePack, type Service, uploadPack } from "./protocol";
 
@@ -21,7 +21,45 @@ export type Result<T> = { ok: true; value: T } | { ok: false; status: 400 | 404 
 export class Repository extends DurableObject<Env> {
   private readonly store = new ObjectStore(this.ctx.storage.sql, this.env.OBJECTS, this.ctx.id.toString());
 
+  private pending: Promise<void> = Promise.resolve();
+
+  private deleted(): boolean {
+    return this.ctx.storage.sql.exec("SELECT 1 FROM repository_tombstone").toArray().length > 0;
+  }
+
+  private async serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.pending;
+    let release!: () => void;
+    this.pending = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try { return await operation(); } finally { release(); }
+  }
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS repository_tombstone (deleted INTEGER NOT NULL)");
+  }
+
+  async deleteRepository(): Promise<void> {
+    if (!this.deleted()) this.ctx.storage.sql.exec("INSERT INTO repository_tombstone VALUES (1)");
+    await this.serialize(async () => {
+      await deleteRepoObjects(this.env.OBJECTS, this.ctx.id.toString());
+      this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec("DELETE FROM refs");
+        this.ctx.storage.sql.exec("DELETE FROM object_chunks");
+        this.ctx.storage.sql.exec("DELETE FROM objects");
+      });
+    });
+  }
+
   override async fetch(request: Request): Promise<Response> {
+    return this.serialize(async () => {
+      if (this.deleted()) return new Response("Not found\n", { status: 404 });
+      return this.git(request);
+    });
+  }
+
+  private async git(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const endpoint = url.pathname.slice(url.pathname.lastIndexOf("/") + 1);
     const service = (endpoint === "refs" ? url.searchParams.get("service") : endpoint) as Service;
@@ -46,12 +84,15 @@ export class Repository extends DurableObject<Env> {
   }
 
   private async browse<T>(read: (browser: Browser) => Promise<T>): Promise<Result<T>> {
-    try {
-      return { ok: true, value: await read(new Browser(this.store)) };
-    } catch (error) {
-      if (error instanceof NotFound) return { ok: false, status: 404, error: error.message };
-      throw error;
-    }
+    return this.serialize(async () => {
+      if (this.deleted()) return { ok: false, status: 404, error: "Repository deleted" };
+      try {
+        return { ok: true, value: await read(new Browser(this.store)) };
+      } catch (error) {
+        if (error instanceof NotFound) return { ok: false, status: 404, error: error.message };
+        throw error;
+      }
+    });
   }
 
   summary(name: RepoName) {
@@ -86,14 +127,17 @@ export class Repository extends DurableObject<Env> {
   }
 
   /** Deletes a branch or tag. The branch HEAD follows is kept, as GitHub keeps the default branch. */
-  deleteRef(ref: string): Result<null> {
-    if (!/^refs\/(heads|tags)\/./.test(ref)) return { ok: false, status: 400, error: "Only branches and tags can be deleted" };
-    return this.ctx.storage.transactionSync((): Result<null> => {
-      const refs = this.store.refs();
-      if (!refs.has(ref)) return { ok: false, status: 404, error: `${ref} does not exist` };
-      if (ref === headTarget(refs)) return { ok: false, status: 409, error: "The default branch cannot be deleted" };
-      this.store.setRef(ref, ZERO_OID);
-      return { ok: true, value: null };
+  async deleteRef(ref: string): Promise<Result<null>> {
+    return this.serialize(async () => {
+      if (this.deleted()) return { ok: false, status: 404, error: "Repository deleted" };
+      if (!/^refs\/(heads|tags)\/./.test(ref)) return { ok: false, status: 400, error: "Only branches and tags can be deleted" };
+      return this.ctx.storage.transactionSync((): Result<null> => {
+        const refs = this.store.refs();
+        if (!refs.has(ref)) return { ok: false, status: 404, error: `${ref} does not exist` };
+        if (ref === headTarget(refs)) return { ok: false, status: 409, error: "The default branch cannot be deleted" };
+        this.store.setRef(ref, ZERO_OID);
+        return { ok: true, value: null };
+      });
     });
   }
 }

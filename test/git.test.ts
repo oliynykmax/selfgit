@@ -128,6 +128,60 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect((await createRepo("invalid-bearer", { Authorization: "Bearer invalid-token" })).status).toBe(401);
     expect((await fetch(`${base}/api/repos/bearer-repo`)).status).toBe(200);
   });
+  test("owner can delete a repository and retry without affecting another repository", async () => {
+    expect((await createRepo("delete-me")).status).toBe(201);
+    expect((await createRepo("keep-me")).status).toBe(201);
+    const src = newRepo("delete-me");
+    commit(src, "file.txt", "to delete");
+    ok(src, "push", "-q", "origin", "main");
+    const keep = newRepo("keep-me");
+    const keepHead = commit(keep, "keep.txt", "keep");
+    ok(keep, "push", "-q", "origin", "main");
+    const endpoint = `${base}/api/repos/delete-me`;
+    expect((await fetch(endpoint, { method: "DELETE", headers: { Origin: base } })).status).toBe(401);
+    expect((await fetch(endpoint, { method: "DELETE", headers: { Origin: "https://evil.example", Cookie: ownerCookie } })).status).toBe(403);
+    expect((await fetch(endpoint, { method: "DELETE", headers: { Authorization: "Bearer invalid-token" } })).status).toBe(401);
+    expect((await fetch(endpoint, { method: "DELETE", headers: { Origin: base, Cookie: ownerCookie } })).status).toBe(200);
+    expect((await fetch(endpoint)).status).toBe(404);
+    expect((await fetch(`${base}/delete-me.git/info/refs?service=git-upload-pack`)).status).toBe(404);
+    expect((await fetch(endpoint, { method: "DELETE", headers: { Authorization: `Bearer ${TOKEN}` } })).status).toBe(200);
+    expect((await createRepo("delete-me")).status).toBe(409);
+    expect(ok(clone("keep-me"), "rev-parse", "HEAD")).toBe(keepHead);
+  });
+  test("deletion waits for an admitted push before cleaning up", async () => {
+    expect((await createRepo("race-delete")).status).toBe(201);
+    const src = newRepo("race-delete");
+    commit(src, "race.txt", "in flight");
+    await fetch(`${base}/__test/hold`);
+    const push = spawn(["git", "push", "origin", "main"], { cwd: src, env: gitEnv, stdout: "ignore", stderr: "pipe" });
+    try {
+      let entered = false;
+      for (let i = 0; i < 100 && !entered; i++) {
+        entered = await (await fetch(`${base}/__test/entered`)).json() as boolean;
+        if (!entered) await Bun.sleep(50);
+      }
+      expect(entered).toBe(true);
+      let finished = false;
+      const deletion = fetch(`${base}/api/repos/race-delete`, { method: "DELETE", headers: { Origin: base, Cookie: ownerCookie } }).then((response) => { finished = true; return response; });
+      let hidden = false;
+      for (let i = 0; i < 100 && !hidden; i++) {
+        hidden = (await fetch(`${base}/api/repos/race-delete`)).status === 404;
+        if (!hidden) await Bun.sleep(50);
+      }
+      expect(hidden).toBe(true);
+      expect(finished).toBe(false);
+      await fetch(`${base}/__test/release`);
+      expect((await deletion).status).toBe(200);
+      await push.exited;
+      expect(await (await fetch(`${base}/__test/remaining`)).json()).toEqual({ counts: [0, 0, 0], keys: [] });
+      expect((await fetch(`${base}/api/repos/race-delete`)).status).toBe(404);
+      expect((await fetch(`${base}/race-delete.git/info/refs?service=git-upload-pack`)).status).toBe(404);
+      expect((await createRepo("race-delete")).status).toBe(409);
+    } finally {
+      await fetch(`${base}/__test/release`);
+      push.kill();
+    }
+  });
   test("repository creation requires the owner and a same-origin request", async () => {
     expect((await createRepo("anonymous", { Origin: base })).status).toBe(401);
     expect((await createRepo("cross-site", { Origin: "https://evil.example", Cookie: ownerCookie })).status).toBe(403);
