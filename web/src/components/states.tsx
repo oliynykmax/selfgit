@@ -17,7 +17,9 @@ export function Problem({ title, detail }: { title: string; detail?: string }) {
   return (
     <div className="px-4 py-12 text-center">
       <p className="font-medium">{title}</p>
-      {detail ? <p className="mt-1 text-sm text-muted-foreground">{detail}</p> : null}
+      {detail ? (
+        <p className="mt-1 text-sm text-muted-foreground">{detail}</p>
+      ) : null}
     </div>
   );
 }

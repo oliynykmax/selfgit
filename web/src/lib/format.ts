@@ -8,12 +8,16 @@ const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
 ];
 
 const relative = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-const absolute = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" });
+const absolute = new Intl.DateTimeFormat("en", {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
 
 export function timeAgo(unixSeconds: number, now = Date.now()): string {
   const delta = unixSeconds - Math.round(now / 1000);
   for (const [unit, seconds] of UNITS) {
-    if (Math.abs(delta) >= seconds) return relative.format(Math.trunc(delta / seconds), unit);
+    if (Math.abs(delta) >= seconds)
+      return relative.format(Math.trunc(delta / seconds), unit);
   }
   return "just now";
 }

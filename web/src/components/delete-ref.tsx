@@ -15,13 +15,23 @@ import { invalidate, send } from "@/lib/api";
 import { apiUrl } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
-export function DeleteRef({ repo, kind, name }: { repo: RepoName; kind: "branch" | "tag"; name: string }) {
+export function DeleteRef({
+  repo,
+  kind,
+  name,
+}: {
+  repo: RepoName;
+  kind: "branch" | "tag";
+  name: string;
+}) {
   const fullName = `refs/${kind === "branch" ? "heads" : "tags"}/${name}`;
   async function remove() {
     try {
       await send(apiUrl(`repos/${repo}/refs`, { name: fullName }), "DELETE");
     } catch (error) {
-      toast.error(`Couldn't delete ${name}`, { description: error instanceof Error ? error.message : undefined });
+      toast.error(`Couldn't delete ${name}`, {
+        description: error instanceof Error ? error.message : undefined,
+      });
       throw error;
     }
     invalidate("/api/repos");
@@ -30,7 +40,13 @@ export function DeleteRef({ repo, kind, name }: { repo: RepoName; kind: "branch"
 
   return (
     <AlertDialog>
-      <AlertDialogTrigger aria-label={`Delete ${kind} ${name}`} className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "text-muted-foreground hover:text-destructive")}>
+      <AlertDialogTrigger
+        aria-label={`Delete ${kind} ${name}`}
+        className={cn(
+          buttonVariants({ variant: "ghost", size: "icon-sm" }),
+          "text-muted-foreground hover:text-destructive",
+        )}
+      >
         <Trash2 />
       </AlertDialogTrigger>
       <AlertDialogBackdrop className="fixed inset-0 bg-black/20" />
@@ -39,11 +55,19 @@ export function DeleteRef({ repo, kind, name }: { repo: RepoName; kind: "branch"
           Delete {kind} <span className="font-mono">{name}</span>?
         </AlertDialogTitle>
         <AlertDialogDescription className="mt-2 text-sm text-muted-foreground">
-          The {kind} disappears from {repo} for everyone. Its commits stay stored, so pushing the {kind} again restores it.
+          The {kind} disappears from {repo} for everyone. Its commits stay
+          stored, so pushing the {kind} again restores it.
         </AlertDialogDescription>
         <div className="mt-5 flex justify-end gap-2">
-          <AlertDialogClose className={buttonVariants({ variant: "outline" })}>Cancel</AlertDialogClose>
-          <AlertDialogClose value="confirm" action={remove} data-agent-confirm={`Deletes the ${kind} ${name} from ${repo}`} className={buttonVariants({ variant: "destructive" })}>
+          <AlertDialogClose className={buttonVariants({ variant: "outline" })}>
+            Cancel
+          </AlertDialogClose>
+          <AlertDialogClose
+            value="confirm"
+            action={remove}
+            data-agent-confirm={`Deletes the ${kind} ${name} from ${repo}`}
+            className={buttonVariants({ variant: "destructive" })}
+          >
             Yes, delete
           </AlertDialogClose>
         </div>

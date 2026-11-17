@@ -11,12 +11,36 @@ import { RefsPage } from "./refs";
 
 type RepoRoute = Exclude<Route, { kind: "home" } | { kind: "not-found" }>;
 
-function Tabs({ repo, refs, active }: { repo: RepoName; refs: RepoRefs | null; active: RepoTab }) {
+function Tabs({
+  repo,
+  refs,
+  active,
+}: {
+  repo: RepoName;
+  refs: RepoRefs | null;
+  active: RepoTab;
+}) {
   const tabs: { id: RepoTab; label: string; to: string; count?: number }[] = [
     { id: "code", label: "Code", to: href.repo(repo) },
-    { id: "commits", label: "Commits", to: refs?.defaultBranch ? href.commits(repo, refs.defaultBranch) : href.repo(repo) },
-    { id: "branches", label: "Branches", to: href.branches(repo), count: refs?.branches.length },
-    { id: "tags", label: "Tags", to: href.tags(repo), count: refs?.tags.length },
+    {
+      id: "commits",
+      label: "Commits",
+      to: refs?.defaultBranch
+        ? href.commits(repo, refs.defaultBranch)
+        : href.repo(repo),
+    },
+    {
+      id: "branches",
+      label: "Branches",
+      to: href.branches(repo),
+      count: refs?.branches.length,
+    },
+    {
+      id: "tags",
+      label: "Tags",
+      to: href.tags(repo),
+      count: refs?.tags.length,
+    },
   ];
   return (
     <nav aria-label="Repository" className="-mb-px flex gap-1 overflow-x-auto">
@@ -27,11 +51,16 @@ function Tabs({ repo, refs, active }: { repo: RepoName; refs: RepoRefs | null; a
           aria-current={tab.id === active ? "page" : undefined}
           className={cn(
             "flex shrink-0 items-center gap-1.5 rounded-t-md border border-transparent px-3 py-2 text-sm text-muted-foreground hover:text-foreground",
-            tab.id === active && "border-border border-b-background bg-background font-medium text-foreground",
+            tab.id === active &&
+              "border-border border-b-background bg-background font-medium text-foreground",
           )}
         >
           {tab.label}
-          {tab.count !== undefined && tab.count > 0 ? <span className="rounded-full bg-muted px-1.5 text-xs tabular-nums">{tab.count}</span> : null}
+          {tab.count !== undefined && tab.count > 0 ? (
+            <span className="rounded-full bg-muted px-1.5 text-xs tabular-nums">
+              {tab.count}
+            </span>
+          ) : null}
         </Link>
       ))}
     </nav>
@@ -56,7 +85,9 @@ export function RepoPage({ route }: { route: RepoRoute }) {
         <Tabs repo={route.repo} refs={data} active={tabOf(route) ?? "code"} />
       </div>
       <div className="mt-4">
-        {refs.status === "error" ? <Problem title="Couldn't load the repository" detail={refs.message} /> : null}
+        {refs.status === "error" ? (
+          <Problem title="Couldn't load the repository" detail={refs.message} />
+        ) : null}
         {data ? <RepoView route={route} refs={data} /> : null}
       </div>
     </main>

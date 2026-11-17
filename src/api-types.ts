@@ -1,8 +1,11 @@
 export type RepoName = string;
 
 export function isRepoName(value: string): value is RepoName {
-  return /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9_-])?$/.test(value) &&
-    !value.endsWith(".git") && !["api", "auth", "assets", "favicon.ico"].includes(value);
+  return (
+    /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9_-])?$/.test(value) &&
+    !value.endsWith(".git") &&
+    !["api", "auth", "assets", "favicon.ico"].includes(value)
+  );
 }
 
 export interface Signature {
@@ -125,7 +128,9 @@ export interface CommitView {
   truncated: boolean;
 }
 
-export type Session = { authenticated: false } | { authenticated: true; login: string; avatarUrl: string };
+export type Session =
+  | { authenticated: false }
+  | { authenticated: true; login: string; avatarUrl: string };
 
 export interface ApiError {
   error: string;

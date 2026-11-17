@@ -1,2 +1,5 @@
 [serve.static]
 plugins = ["bun-plugin-tailwind"]
+
+[fmt]
+ignorePatterns = ["worker-configuration.d.ts"]

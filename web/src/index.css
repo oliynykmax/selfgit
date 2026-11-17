@@ -8,7 +8,8 @@
 @import "@fontsource-variable/jetbrains-mono";
 
 @theme inline {
-  --font-sans: "Schibsted Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans:
+    "Schibsted Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
   --font-heading: var(--font-sans);
   --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
   --color-ring: var(--ring);

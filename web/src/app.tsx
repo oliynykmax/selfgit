@@ -29,7 +29,10 @@ export function App() {
   const { pathname, search } = useLocation();
   useSignInNotice(search);
   const route = parseRoute(pathname);
-  const title = route.kind === "home" || route.kind === "not-found" ? "git.oliinyk.dev" : `${route.repo} · git.oliinyk.dev`;
+  const title =
+    route.kind === "home" || route.kind === "not-found"
+      ? "git.oliinyk.dev"
+      : `${route.repo} · git.oliinyk.dev`;
   useEffect(() => {
     document.title = title;
   }, [title]);
@@ -42,7 +45,9 @@ export function App() {
           <Problem title="Page not found" detail="This page does not exist." />
         </main>
       ) : null}
-      {route.kind !== "home" && route.kind !== "not-found" ? <RepoPage key={route.repo} route={route} /> : null}
+      {route.kind !== "home" && route.kind !== "not-found" ? (
+        <RepoPage key={route.repo} route={route} />
+      ) : null}
       <Toaster />
     </>
   );

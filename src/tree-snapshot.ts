@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import type { Browser } from "./browse";
 import type { TreeView } from "./api-types";
 
-export async function treeSnapshot(browser: Browser, bucket: R2Bucket, repoId: string, revision: string, path: string): Promise<TreeView> {
+export async function treeSnapshot(
+  browser: Browser,
+  bucket: R2Bucket,
+  repoId: string,
+  revision: string,
+  path: string,
+): Promise<TreeView> {
   const commit = browser.resolve(revision);
   const directory = path.split("/").filter(Boolean).join("/");
   const key = treeSnapshotKey(repoId, commit, directory);
@@ -13,7 +19,11 @@ export async function treeSnapshot(browser: Browser, bucket: R2Bucket, repoId: s
   return view;
 }
 
-export function treeSnapshotKey(repoId: string, commit: string, path: string): string {
+export function treeSnapshotKey(
+  repoId: string,
+  commit: string,
+  path: string,
+): string {
   const directory = path.split("/").filter(Boolean).join("/");
   const pathHash = createHash("sha256").update(directory).digest("hex");
   return `${repoId}/tree-snapshots/v1/${commit}/${pathHash}`;
