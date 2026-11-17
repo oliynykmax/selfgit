@@ -10,15 +10,15 @@ const worker = createHandler(new GitHubIdentity(async (_url, init) => {
 export { Registry, Sessions } from "../src/index";
 
 export class Repository extends BaseRepository {
-  private controls: { hold: boolean; entered: boolean; release?: () => void };
+  private controls: { hold: boolean; entered: boolean; releases: Array<() => void> };
   constructor(ctx: DurableObjectState, env: Env) {
-    const controls: { hold: boolean; entered: boolean; release?: () => void } = { hold: false, entered: false };
+    const controls: { hold: boolean; entered: boolean; releases: Array<() => void> } = { hold: false, entered: false, releases: [] };
     const bucket = new Proxy(env.OBJECTS, {
       get(target, property) {
         if (property === "put") return async (...args: Parameters<R2Bucket["put"]>) => {
           if (controls.hold) {
             controls.entered = true;
-            await new Promise<void>((resolve) => { controls.release = resolve; });
+            await new Promise<void>((resolve) => { controls.releases.push(resolve); });
           }
           return target.put(...args);
         };
@@ -31,7 +31,7 @@ export class Repository extends BaseRepository {
   }
   holdWrites() { this.controls.hold = true; }
   writeEntered() { return this.controls.entered; }
-  releaseWrites() { this.controls.hold = false; this.controls.release?.(); }
+  releaseWrites() { this.controls.hold = false; for (const release of this.controls.releases.splice(0)) release(); }
   async remaining() {
     const counts = ["refs", "objects", "object_chunks"].map((table) => this.ctx.storage.sql.exec<{ count: number }>(`SELECT count(*) AS count FROM ${table}`).one().count);
     const objects = await this.env.OBJECTS.list({ prefix: `${this.ctx.id.toString()}/` });
