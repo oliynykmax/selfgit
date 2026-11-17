@@ -1,11 +1,51 @@
 import worker from "../src/index";
 import { finishLogin, startLogin, type OAuthConfig } from "../src/oauth";
 
-export { Repository, Registry, Sessions } from "../src/index";
+import { Repository as BaseRepository } from "../src/repo";
+export { Registry, Sessions } from "../src/index";
+
+export class Repository extends BaseRepository {
+  private controls: { hold: boolean; entered: boolean; release?: () => void };
+  constructor(ctx: DurableObjectState, env: Env) {
+    const controls: { hold: boolean; entered: boolean; release?: () => void } = { hold: false, entered: false };
+    const bucket = new Proxy(env.OBJECTS, {
+      get(target, property) {
+        if (property === "put") return async (...args: Parameters<R2Bucket["put"]>) => {
+          if (controls.hold) {
+            controls.entered = true;
+            await new Promise<void>((resolve) => { controls.release = resolve; });
+          }
+          return target.put(...args);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    super(ctx, { ...env, OBJECTS: bucket });
+    this.controls = controls;
+  }
+  holdWrites() { this.controls.hold = true; }
+  writeEntered() { return this.controls.entered; }
+  releaseWrites() { this.controls.hold = false; this.controls.release?.(); }
+  async remaining() {
+    const counts = ["refs", "objects", "object_chunks"].map((table) => this.ctx.storage.sql.exec<{ count: number }>(`SELECT count(*) AS count FROM ${table}`).one().count);
+    const objects = await this.env.OBJECTS.list({ prefix: `${this.ctx.id.toString()}/` });
+    return { counts, keys: objects.objects.map((object) => object.key) };
+  }
+}
+
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path.startsWith("/__test/")) {
+      const repo = env.REPOS.getByName("race-delete") as unknown as DurableObjectStub<Repository>;
+      if (path === "/__test/hold") await repo.holdWrites();
+      if (path === "/__test/release") await repo.releaseWrites();
+      if (path === "/__test/entered") return Response.json(await repo.writeEntered());
+      if (path === "/__test/remaining") return Response.json(await repo.remaining());
+      return new Response("ok");
+    }
     if (path === "/auth/github/login" || path === "/auth/github/callback") {
       const auth: OAuthConfig = {
         clientId: "test-client",

@@ -77,6 +77,16 @@ interface ObjectRow extends Record<string, SqlStorageValue> {
   links: string;
 }
 
+export async function deleteRepoObjects(bucket: R2Bucket, repoId: string): Promise<void> {
+  const prefix = `${repoId}/`;
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list({ prefix, cursor });
+    if (page.objects.length) await bucket.delete(page.objects.map((object) => object.key));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+}
+
 export class ObjectStore {
   constructor(private readonly sql: SqlStorage, private readonly bucket: R2Bucket, private readonly repoId: string) {
     sql.exec(`CREATE TABLE IF NOT EXISTS objects (

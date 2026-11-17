@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
 import { deflateSync } from "node:zlib";
-import { ObjectStore, hashObject } from "../src/objects";
+import { ObjectStore, hashObject, deleteRepoObjects } from "../src/objects";
 
 function setup() {
   const db = new Database(":memory:");
@@ -70,4 +70,24 @@ test("receive-pack leaves refs unchanged after an upload failure and succeeds on
   setFailure(false);
   expect((await receivePack(store, transaction, body)).toString()).toContain("ok refs/heads/main");
   expect(store.refs().get("refs/heads/main")).toBe(oid);
+});
+
+
+test("repository cleanup retries paginated failures without touching other prefixes", async () => {
+  const keys = new Set(["repo/a", "repo/b", "repo/c", "repo-other/a"]);
+  let fail = true;
+  const bucket = {
+    async list({ prefix, cursor }: { prefix: string; cursor?: string }) {
+      const matches = [...keys].filter((key) => key.startsWith(prefix) && (!cursor || key > cursor)).sort();
+      const objects = matches.slice(0, 1).map((key) => ({ key }));
+      return matches.length > 1 ? { objects, truncated: true, cursor: objects[0]!.key } : { objects, truncated: false };
+    },
+    async delete(batch: string[]) {
+      if (batch[0] === "repo/b" && fail) { fail = false; throw new Error("unavailable"); }
+      for (const key of batch) keys.delete(key);
+    },
+  } as unknown as R2Bucket;
+  await expect(deleteRepoObjects(bucket, "repo")).rejects.toThrow("unavailable");
+  await deleteRepoObjects(bucket, "repo");
+  expect([...keys]).toEqual(["repo-other/a"]);
 });
