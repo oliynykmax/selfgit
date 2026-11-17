@@ -74,6 +74,7 @@ done
                     continue
                 output.extend(data[:max(0, LOG_LIMIT - len(output))])
         text = output.decode('utf-8', 'replace').replace(TOKEN, '[redacted]').replace(job['leaseToken'], '[redacted]')
+        print(text, end='', flush=True)
         for offset in range(0, len(text), 1024):
             if not request('log', {**lease, 'text': text[offset:offset + 1024]}).get('ok'):
                 lease_valid = False
