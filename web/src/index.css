@@ -81,6 +81,32 @@
   --ui-font-mono: var(--font-mono);
 }
 
+.dark {
+  color-scheme: dark;
+  --background: #000;
+  --foreground: #f5f5f5;
+  --card: #000;
+  --card-foreground: #f5f5f5;
+  --popover: #171717;
+  --popover-foreground: #f5f5f5;
+  --primary: #ededed;
+  --primary-foreground: #171717;
+  --secondary: #262626;
+  --secondary-foreground: #f5f5f5;
+  --muted: #262626;
+  --muted-foreground: #a3a3a3;
+  --accent: #303030;
+  --accent-foreground: #f5f5f5;
+  --destructive: #ff7777;
+  --border: #404040;
+  --input: #525252;
+  --ring: #a3a3a3;
+  --added: #71d99a;
+  --added-muted: #102b1a;
+  --removed: #ff9090;
+  --removed-muted: #321818;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
