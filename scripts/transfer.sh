@@ -1,10 +1,10 @@
 #!/bin/sh
-# Copies every ref of each course repo from the old server to the Cloudflare Worker.
-# Usage: scripts/transfer.sh <old base URL> <new base URL>, with gh logged in as the server owner.
+# Copies every ref of each repo from another Git server to selfgit.
+# Usage: scripts/transfer.sh <source base URL> <selfgit base URL>, with gh logged in as the server owner.
 # SELFGIT_REPOS overrides the "old:new" name pairs (default repo1:repo1 ... repo10:repo10).
 set -eu
 
-old=${1:?old base URL, for example https://selfgit.up.railway.app}
+old=${1:?source base URL, for example https://git.example.com}
 new=${2:?new base URL, for example https://git.oliinyk.dev}
 gh auth token --hostname github.com > /dev/null || { echo "log in with gh auth login first" >&2; exit 1; }
 pairs=${SELFGIT_REPOS:-"repo1:repo1 repo2:repo2 repo3:repo3 repo4:repo4 repo5:repo5 repo6:repo6 repo7:repo7 repo8:repo8 repo9:repo9 repo10:repo10"}

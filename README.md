@@ -1,112 +1,131 @@
-# selfgit
+<p align="center">
+  <a href="https://git.oliinyk.dev">
+    <img src="web/favicon.svg" alt="selfgit logo" width="72" height="72">
+  </a>
+</p>
+<h1 align="center">selfgit</h1>
+<p align="center">A small, personal Git server that runs entirely on Cloudflare Workers.</p>
+<p align="center">
+  <a href="https://git.oliinyk.dev"><img alt="Live at git.oliinyk.dev" src="https://img.shields.io/badge/live-git.oliinyk.dev-black?style=flat-square"></a>
+  <a href="https://developers.cloudflare.com/workers/"><img alt="Cloudflare Workers" src="https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white"></a>
+  <a href="https://bun.com"><img alt="Built with Bun" src="https://img.shields.io/badge/built%20with-Bun-000?style=flat-square&logo=bun"></a>
+</p>
 
-Git server for school courses. Push weekly assignments here instead of creating new repos on GitHub.
+<p align="center">
+  <a href="https://git.oliinyk.dev/selfgit">
+    <picture>
+      <source srcset="docs/screenshots/dark.png" media="(prefers-color-scheme: dark)">
+      <source srcset="docs/screenshots/light.png" media="(prefers-color-scheme: light)">
+      <img src="docs/screenshots/light.png" alt="The selfgit repository page">
+    </picture>
+  </a>
+</p>
 
-It runs on Cloudflare Workers. Each named repository has a Durable Object that stores refs and object metadata in SQLite and speaks the Git smart HTTP protocol. Compressed Git object payloads live in the `selfgit-objects` R2 bucket under repository-scoped keys. Storage is persistent, unlike the old Railway container, which lost every repo on redeploy.
+---
 
-## Usage
+Push course work and side projects to your own domain instead of opening yet another GitHub repo. Anyone can clone. Only you can push, signed in with the GitHub CLI you already use.
 
-Clone and fetch are public:
+- **Real Git.** Smart HTTP clone, fetch and push, including shallow clones, tags, force and atomic pushes, and branch deletion.
+- **Durable storage.** Each repository is a Durable Object holding refs and object metadata in SQLite. Object payloads live in R2.
+- **A web UI.** Browse code, commits, diffs and branches, with rendered READMEs, light and dark themes.
+- **No passwords.** Pushes are checked against your GitHub account id. Nothing secret is stored on the server.
+- **Free plan.** Runs on the Cloudflare Workers Free plan.
+
+### Use it
+
+Clone and fetch need no credentials:
 
 ```bash
-git clone https://git.oliinyk.dev/repo1.git
+git clone https://git.oliinyk.dev/selfgit.git
 ```
 
-Push is tied to the owner's GitHub CLI login. Git sends a GitHub token as the HTTP Basic password. The Worker asks `https://api.github.com/user` whose token it is and accepts only the GitHub account with id `GITHUB_OWNER_ID` in `wrangler.jsonc` (85843900, `oliynykmax`). The id is checked, not the login name, because a login can be renamed and later claimed by someone else.
-
-Give Git the token from `gh` for this host only:
+To push, let Git ask `gh` for a token, for this host only:
 
 ```bash
 git config --global credential.https://git.oliinyk.dev.helper ''
 git config --global --add credential.https://git.oliinyk.dev.helper \
   '!f() { test "$1" = get && echo username=git && echo "password=$(gh auth token --hostname github.com)"; }; f'
-git push origin main
 ```
 
-The first line empties the helper list for `https://git.oliinyk.dev`, so a global `credential.helper store` or a keychain never saves the token. Other hosts keep their helpers. Drop `--global` and run both lines inside a clone to limit the helper to that one repo. `gh auth setup-git` cannot do this: it only configures hosts that `gh` itself is logged in to, such as `github.com`.
+The first line clears any stored helper for this host, so the token is fetched fresh on every push and never saved to disk.
 
-The token is fetched fresh on every push and never written to disk by Git. Clone and fetch send no credentials.
+Create a repository from the web UI after signing in, or from the terminal:
 
-The repository creation and ref deletion API also accepts an explicit `Authorization: Bearer <GitHub token>` header. It checks the same owner ID as Git pushes. Requests authenticated by the browser session must come from the same origin. An invalid authorization header never falls back to a browser session.
+```bash
+curl -X POST https://git.oliinyk.dev/api/repos \
+  -H "Authorization: Bearer $(gh auth token)" -d '{"name":"week1"}'
+```
 
-Shallow clones (`--depth`, `fetch --depth`, `--unshallow`), tags, branch deletion, force pushes, and atomic pushes work as they do against stock `git-http-backend`.
+Moving repositories from another Git server? `scripts/transfer.sh <source> <selfgit>` mirrors every branch and tag and compares the refs on both sides. It never writes to the source.
 
-## Deploy
+### Deploy your own
 
 ```bash
 bun install
 bun run deploy
 ```
 
-Configure the GitHub OAuth client ID and secret as Worker secrets for owner sign-in. `wrangler.jsonc` attaches the Worker to the custom domain `git.oliinyk.dev` and sets `GITHUB_OWNER_ID`. Find another account's id with `gh api user --jq .id`. The Worker refuses every push if the id is missing or not a number. The Railway image used a shared token and fell back to `changeme`.
+Then, in [`wrangler.jsonc`](wrangler.jsonc):
 
-## Moving from Railway
+1. Set `GITHUB_OWNER_ID` to your numeric GitHub id (`gh api user --jq .id`). The id is checked, not the login, because a login can be renamed and claimed by someone else.
+2. Point `routes` at your own domain.
+3. Add `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` as Worker secrets for web sign-in.
 
-On 2026-11-16 the Railway project `selfgit` had no active deployment. Every past deployment showed as removed, the account's trial had expired, and `selfgit-production.up.railway.app` answered 404. The service had no volume, and the container kept repos only on its own disk, so no repository data survives to copy.
-
-1. Deploy as above and check that `git ls-remote https://git.oliinyk.dev/repo1.git` answers.
-2. Push each course repo from a local clone that still has its history:
-
-   ```bash
-   git remote set-url origin https://git.oliinyk.dev/repo1.git
-   git push --all origin && git push --tags origin
-   ```
-
-3. If some other Git server still holds repos, `scripts/transfer.sh` mirrors every branch and tag and then compares the refs on both sides. It never writes to the source:
-
-   ```bash
-   scripts/transfer.sh https://old.example https://git.oliinyk.dev
-   ```
-
-   `SELFGIT_REPOS="repo1:repo1 repo3:repo7"` picks or renames repos.
-
-4. The Railway project can be deleted from the Railway dashboard. Nothing on Cloudflare depends on it.
-
-## Push authentication tradeoffs
-
-- The `gh` token has the scopes `gh auth login` granted, typically `repo`, so the Worker receives a credential that can act on your GitHub account. It is sent only to `api.github.com` (redirects are not followed), cached only as a SHA-256 hash, and never logged by the Worker. To limit the exposure, push with a fine-grained personal access token that has no permissions instead: `/user` works with any valid token.
-- A verified token is cached in the Worker isolate for 5 minutes, so a push makes one GitHub call instead of one per HTTP request. A revoked token keeps working for up to 5 minutes on an isolate that already cached it. Failed checks are not cached.
-- Each check counts against the owner's own GitHub REST budget of 5,000 requests per hour.
-- If GitHub is down, slow (over 5 s), or rate-limits the check, pushes fail with 503 and Git does not discard the credential. Clone and fetch never call GitHub and keep working.
-- A wrong account gets 403. A missing or rejected token gets 401.
-
-## Differences from the Railway server
-
-- Push uses the owner's GitHub token instead of a shared `git:TOKEN` password.
-- `GET /repoN.git/info/refs?service=git-receive-pack` now requires the push credentials too, not only the `POST`. Git asks for credentials one request earlier and pushes the same way.
-- Repos have no configurable `HEAD`. It points at `main`, else `master`, else the first branch, so a clone checks out whatever branch the repo uses.
-- The server speaks protocol v0. Git clients that ask for v2 fall back to it automatically.
-- Not supported: the dumb HTTP protocol, `--shallow-since`, `--shallow-exclude`, `fetch --deepen=N`, push options, and partial clone filters. The old server did not enable filters either.
-- Nothing is garbage-collected. Objects left unreachable by force pushes or deleted branches stay stored.
-
-## Limits
-
-These are Cloudflare Workers Free plan limits as documented on 2026-11-16.
-
-- Request bodies are capped at 100 MB, which matches the old nginx `client_max_body_size`.
-- A Durable Object has 128 MB of memory and 30 s of CPU per request. A push holds the whole pack plus the largest object's contents in memory, so a single file over roughly 40 MB may fail on Cloudflare. A 90 MB push worked under local `wrangler dev`, but the local runtime does not enforce the memory limit.
-- SQLite stores refs and metadata for each object. Existing SQLite payloads migrate on read after an R2 upload and hash verification; their original bytes remain in SQLite. Unread legacy objects remain in SQLite.
-- R2 Standard has a monthly free allowance for storage and operations, after which charges apply. The allowance is shared across the account. See [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and [R2 limits](https://developers.cloudflare.com/r2/platform/limits/) for current details. Worker memory and request limits can constrain Git operations well before the R2 object size limit.
-
-[Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/) hosts Git repos natively, and Containers could run the old image, but both require Workers Paid.
-
-## Development
+### Develop
 
 ```bash
 bun install
-bun run typecheck
-bun run test
+bun run dev       # build the web app and run the Worker on :8787
+bun run dev:web   # web UI with hot reload on :5173, API proxied to :8787
+bun run ci        # bun check, bun lint, bun fmt --check, every test
 ```
 
-`bun run test` runs everything, including the `wrangler dev` integration suite in `test/git.test.ts`. The self-hosted CI runner is a 1/8-OCPU Oracle micro VM that the hypervisor throttles heavily (15-30% CPU steal), and workerd stalls at random under that suite, so CI runs `bun run test:ci`, which skips `test/git.test.ts`. Run the full `bun run test` on a normal machine before pushing changes to the Git protocol or Durable Objects.
+Everything runs on [Bun](https://bun.com). Bun bundles the React and Tailwind web app, `bun check` type checks, `bun lint` and `bun fmt` keep the code tidy, and `bun test` runs the suite. The Git integration tests start `wrangler dev` and drive it with the real `git` CLI. The shallow-clone test runs the same steps against stock `git-http-backend` and requires identical results.
 
-`test/auth.test.ts` checks push authorization against a fake GitHub: owner, other account, rejected and missing tokens, outages, redirects, and caching. `test/git.test.ts` needs a logged-in `gh` (or `GH_TOKEN`), because its pushes verify a real token with GitHub through the credential helper above. It starts `wrangler dev` with persisted local state and drives it with the real `git` CLI: clone, push, fetch, thin packs with deltas, multi-megabyte binaries, tags, deletes, force and atomic pushes, gzip request bodies, the transfer script, and a runtime restart to prove persistence. The shallow-clone test runs the same steps against stock `git-http-backend` (`test/reference.ts`) and requires identical results.
+| Path                                 | What lives there                                            |
+| ------------------------------------ | ----------------------------------------------------------- |
+| [`src/index.ts`](src/index.ts)       | Request routing                                             |
+| [`src/repo.ts`](src/repo.ts)         | The Durable Object that serves one repository               |
+| [`src/protocol.ts`](src/protocol.ts) | Ref advertisement, upload-pack negotiation and receive-pack |
+| [`src/pack.ts`](src/pack.ts)         | Reading, resolving and writing packfiles                    |
+| [`src/objects.ts`](src/objects.ts)   | Object storage in R2 and SQLite                             |
+| [`src/auth.ts`](src/auth.ts)         | Push authorization against GitHub                           |
+| [`src/ci.ts`](src/ci.ts)             | The CI job queue                                            |
+| [`web/`](web)                        | The web UI                                                  |
+| [`runner/`](runner)                  | The self-hosted CI runner                                   |
 
-Source layout:
+### CI
 
-- `src/index.ts` routes requests.
-- `src/auth.ts` verifies push tokens with GitHub.
-- `src/repo.ts` is the Durable Object that serves one repository.
-- `src/protocol.ts` implements ref advertisement, upload-pack negotiation (including shallow), and receive-pack.
-- `src/pack.ts` reads incoming packs, resolves deltas, and writes outgoing packs.
-- `src/objects.ts` stores object payloads in R2 and metadata and refs in SQLite.
+Every push to the `main` branch of selfgit's own repository queues a CI job. [`runner/runner.py`](runner/runner.py) polls the Worker for jobs, checks out the commit in an isolated [proot](https://github.com/termux/proot-distro) Debian guest, and runs `bun run ci`. The runner lives on an Android phone in Termux. Android kernels have a 39-bit address space, which the stock workerd allocator can't handle, so the tests use workerd [built without tcmalloc](https://github.com/oliynykmax/workerd-arm64-39bit).
+
+<details>
+<summary><strong>Push authentication tradeoffs</strong></summary>
+
+- The `gh` token usually has the `repo` scope, so the Worker receives a credential that could act on your GitHub account. It is sent only to `api.github.com`, cached only as a SHA-256 hash, and never logged. To limit exposure, push with a fine-grained token that has no permissions. `/user` works with any valid token.
+- A verified token is cached for 5 minutes per isolate, so a revoked token can keep working that long. Failed checks are not cached.
+- Each check counts against your GitHub REST budget of 5,000 requests per hour.
+- If GitHub is down, slow (over 5 s) or rate limiting, pushes fail with 503. Clone and fetch never call GitHub.
+- A wrong account gets 403. A missing or rejected token gets 401.
+
+</details>
+
+<details>
+<summary><strong>Protocol support</strong></summary>
+
+- The server speaks protocol v0. Clients that ask for v2 fall back automatically.
+- `HEAD` points at `main`, else `master`, else the first branch.
+- Not supported: the dumb HTTP protocol, `--shallow-since`, `--shallow-exclude`, `fetch --deepen`, push options and partial clone filters.
+- Nothing is garbage collected. Objects left unreachable by force pushes or deleted branches stay stored.
+
+</details>
+
+<details>
+<summary><strong>Limits</strong></summary>
+
+These are Cloudflare Workers Free plan limits.
+
+- Request bodies are capped at 100 MB.
+- A Durable Object has 128 MB of memory and 30 s of CPU per request. A push holds the pack and its largest object in memory, so a single file over roughly 40 MB may fail.
+- R2 has a monthly free allowance for storage and operations. See [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and [R2 limits](https://developers.cloudflare.com/r2/platform/limits/).
+
+</details>
