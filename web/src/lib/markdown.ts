@@ -35,14 +35,20 @@ function decode(value: string): string {
 
 function splitSuffix(target: string): [string, string] {
   const index = target.search(/[?#]/);
-  return index === -1 ? [target, ""] : [target.slice(0, index), target.slice(index)];
+  return index === -1
+    ? [target, ""]
+    : [target.slice(0, index), target.slice(index)];
 }
 
 /**
  * Markdown from a repository is untrusted. marked renders it, DOMPurify keeps only inert HTML,
  * and relative links and images are pointed at this site's routes.
  */
-export function renderMarkdown(source: string, dir: string, resolve: LinkResolver): string {
+export function renderMarkdown(
+  source: string,
+  dir: string,
+  resolve: LinkResolver,
+): string {
   const purify = DOMPurify();
   if (!purify.isSupported) return `<pre>${escapeHtml(source)}</pre>`;
   const html = marked.parse(source, { async: false, gfm: true });
@@ -54,7 +60,11 @@ export function renderMarkdown(source: string, dir: string, resolve: LinkResolve
         node.setAttribute("target", "_blank");
       } else if (target && !target.startsWith("#")) {
         const [path, suffix] = splitSuffix(target);
-        node.setAttribute("href", resolve.link(resolvePath(dir, decode(path))) + suffix.replace(/^\?[^#]*/, ""));
+        node.setAttribute(
+          "href",
+          resolve.link(resolvePath(dir, decode(path))) +
+            suffix.replace(/^\?[^#]*/, ""),
+        );
       }
     }
     if (node.tagName === "INPUT") {
@@ -63,7 +73,11 @@ export function renderMarkdown(source: string, dir: string, resolve: LinkResolve
     }
     if (node.tagName === "IMG") {
       const src = node.getAttribute("src") ?? "";
-      if (src && !EXTERNAL.test(src)) node.setAttribute("src", resolve.image(resolvePath(dir, decode(splitSuffix(src)[0]))));
+      if (src && !EXTERNAL.test(src))
+        node.setAttribute(
+          "src",
+          resolve.image(resolvePath(dir, decode(splitSuffix(src)[0]))),
+        );
       node.setAttribute("loading", "lazy");
       node.setAttribute("referrerpolicy", "no-referrer");
     }

@@ -28,7 +28,11 @@ export class Sessions extends DurableObject<Env> {
     ) WITHOUT ROWID`);
   }
 
-  async create(idHash: string, user: SessionUser, expiresAt: number): Promise<void> {
+  async create(
+    idHash: string,
+    user: SessionUser,
+    expiresAt: number,
+  ): Promise<void> {
     this.sql.exec("DELETE FROM sessions WHERE expires_at <= ?", Date.now());
     this.sql.exec(
       "INSERT INTO sessions (id_hash, user_id, login, avatar_url, expires_at) VALUES (?, ?, ?, ?, ?)",
@@ -48,7 +52,9 @@ export class Sessions extends DurableObject<Env> {
         now,
       )
       .toArray()[0];
-    return row ? { userId: row.user_id, login: row.login, avatarUrl: row.avatar_url } : null;
+    return row
+      ? { userId: row.user_id, login: row.login, avatarUrl: row.avatar_url }
+      : null;
   }
 
   async delete(idHash: string): Promise<void> {

@@ -20,9 +20,17 @@ export class PktReader {
 
   /** Returns the payload, `null` for a flush packet, or throws on malformed input. */
   read(): Buffer | null {
-    if (this.pos + 4 > this.buf.length) throw new ProtocolError("truncated pkt-line");
-    const len = Number.parseInt(this.buf.toString("latin1", this.pos, this.pos + 4), 16);
-    if (Number.isNaN(len) || (len > 0 && len < 4) || this.pos + Math.max(len, 4) > this.buf.length) {
+    if (this.pos + 4 > this.buf.length)
+      throw new ProtocolError("truncated pkt-line");
+    const len = Number.parseInt(
+      this.buf.toString("latin1", this.pos, this.pos + 4),
+      16,
+    );
+    if (
+      Number.isNaN(len) ||
+      (len > 0 && len < 4) ||
+      this.pos + Math.max(len, 4) > this.buf.length
+    ) {
       throw new ProtocolError("malformed pkt-line");
     }
     this.pos += 4;
@@ -48,9 +56,15 @@ export class PktReader {
 const SIDEBAND_MAX = { "side-band-64k": 65515, "side-band": 995 } as const;
 export type Sideband = keyof typeof SIDEBAND_MAX | null;
 
-export function* sideband(band: 1 | 2 | 3, data: Uint8Array, mode: Exclude<Sideband, null>): Generator<Buffer> {
+export function* sideband(
+  band: 1 | 2 | 3,
+  data: Uint8Array,
+  mode: Exclude<Sideband, null>,
+): Generator<Buffer> {
   const max = SIDEBAND_MAX[mode];
   for (let off = 0; off < data.length; off += max) {
-    yield pkt(Buffer.concat([Buffer.from([band]), data.subarray(off, off + max)]));
+    yield pkt(
+      Buffer.concat([Buffer.from([band]), data.subarray(off, off + max)]),
+    );
   }
 }

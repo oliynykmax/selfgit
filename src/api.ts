@@ -6,7 +6,10 @@ import type { Result } from "./repo";
 import { GitHubIdentity } from "./auth";
 import { treeSnapshotKey } from "./tree-snapshot";
 
-const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
+const JSON_HEADERS = {
+  "Content-Type": "application/json; charset=utf-8",
+  "Cache-Control": "no-store",
+};
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
@@ -21,15 +24,23 @@ function fromResult<T>(result: Result<T>): Response {
 }
 
 /** Raw file bytes. The sandbox CSP and nosniff keep an HTML or SVG file in a repo from running as part of this site. */
-function rawResponse(path: string, content: Uint8Array, binary: boolean): Response {
-  const name = path.slice(path.lastIndexOf("/") + 1).replace(/[^\w.-]/g, "_") || "file";
+function rawResponse(
+  path: string,
+  content: Uint8Array,
+  binary: boolean,
+): Response {
+  const name =
+    path.slice(path.lastIndexOf("/") + 1).replace(/[^\w.-]/g, "_") || "file";
   const image = imageType(path);
-  const type = image ?? (binary ? "application/octet-stream" : "text/plain; charset=utf-8");
+  const type =
+    image ??
+    (binary ? "application/octet-stream" : "text/plain; charset=utf-8");
   return new Response(content, {
     headers: {
       "Content-Type": type,
       "Content-Disposition": `${image || !binary ? "inline" : "attachment"}; filename="${name}"`,
-      "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+      "Content-Security-Policy":
+        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-store",
     },
@@ -44,19 +55,29 @@ interface ApiContext {
   identity: GitHubIdentity;
 }
 
-export async function authorizeOwner(request: Request, auth: OAuthConfig, identity: GitHubIdentity): Promise<Response | null> {
+export async function authorizeOwner(
+  request: Request,
+  auth: OAuthConfig,
+  identity: GitHubIdentity,
+): Promise<Response | null> {
   const authorization = request.headers.get("Authorization");
   if (authorization !== null) {
     const match = /^Bearer ([^\s]+)$/i.exec(authorization);
     if (!match) return error(401, "A GitHub bearer token is required");
-    if (!auth.ownerId || !/^\d+$/.test(auth.ownerId)) return error(503, "Owner is not configured");
+    if (!auth.ownerId || !/^\d+$/.test(auth.ownerId))
+      return error(503, "Owner is not configured");
     const result = await identity.resolve(match[1]!);
     if (result === "invalid") return error(401, "GitHub rejected the token");
-    if (result === "unavailable") return error(503, "Could not verify the token with GitHub");
-    return result.userId === Number(auth.ownerId) ? null : error(403, "This GitHub account is not the owner");
+    if (result === "unavailable")
+      return error(503, "Could not verify the token with GitHub");
+    return result.userId === Number(auth.ownerId)
+      ? null
+      : error(403, "This GitHub account is not the owner");
   }
   if (!sameOrigin(request)) return error(403, "Cross-site request refused");
-  return (await currentUser(request, auth)) ? null : error(401, "Sign in as the owner");
+  return (await currentUser(request, auth))
+    ? null
+    : error(401, "Sign in as the owner");
 }
 
 type RepoStub = DurableObjectStub<import("./repo").Repository>;
@@ -69,35 +90,57 @@ function param(url: URL, name: string, fallback = ""): string {
   return url.searchParams.get(name) ?? fallback;
 }
 
-type Handler = (context: ApiContext, repo: RepoStub, name: RepoName, rest: string[]) => Promise<Response>;
+type Handler = (
+  context: ApiContext,
+  repo: RepoStub,
+  name: RepoName,
+  rest: string[],
+) => Promise<Response>;
 
 const REPO_ROUTES: Record<string, Partial<Record<string, Handler>>> = {
   "": { GET: async (_c, repo, name) => fromResult(await repo.refs(name)) },
-  tree: { GET: async ({ url, env }, repo) => {
-    const path = param(url, "path");
-    const descriptor = await repo.treeDescriptor(param(url, "ref", "HEAD"));
-    if (!descriptor.ok) return fromResult(descriptor);
-    const { repoId, commit } = descriptor.value;
-    const snapshot = await env.OBJECTS.get(treeSnapshotKey(repoId, commit, path));
-    if (snapshot) return new Response(snapshot.body, { headers: { ...JSON_HEADERS, "X-Tree-Snapshot": "worker-hit" } });
-    const response = fromResult(await repo.tree(commit, path));
-    response.headers.set("X-Tree-Snapshot", "miss");
-    return response;
-  } },
-  blob: { GET: async ({ url }, repo) => fromResult(await repo.blob(param(url, "ref", "HEAD"), param(url, "path"))) },
+  tree: {
+    GET: async ({ url, env }, repo) => {
+      const path = param(url, "path");
+      const descriptor = await repo.treeDescriptor(param(url, "ref", "HEAD"));
+      if (!descriptor.ok) return fromResult(descriptor);
+      const { repoId, commit } = descriptor.value;
+      const snapshot = await env.OBJECTS.get(
+        treeSnapshotKey(repoId, commit, path),
+      );
+      if (snapshot)
+        return new Response(snapshot.body, {
+          headers: { ...JSON_HEADERS, "X-Tree-Snapshot": "worker-hit" },
+        });
+      const response = fromResult(await repo.tree(commit, path));
+      response.headers.set("X-Tree-Snapshot", "miss");
+      return response;
+    },
+  },
+  blob: {
+    GET: async ({ url }, repo) =>
+      fromResult(
+        await repo.blob(param(url, "ref", "HEAD"), param(url, "path")),
+      ),
+  },
   raw: {
     GET: async ({ url }, repo) => {
       const path = param(url, "path");
       const result = await repo.raw(param(url, "ref", "HEAD"), path);
-      return result.ok ? rawResponse(path, result.value.content, result.value.binary) : error(result.status, result.error);
+      return result.ok
+        ? rawResponse(path, result.value.content, result.value.binary)
+        : error(result.status, result.error);
     },
   },
   commits: {
     GET: async ({ url }, repo, _name, rest) => {
       if (rest.length === 1) return fromResult(await repo.commit(rest[0]!));
       const page = Number(param(url, "page", "0"));
-      if (!Number.isSafeInteger(page) || page < 0) return error(400, "page must be a whole number");
-      return fromResult(await repo.log(param(url, "ref", "HEAD"), param(url, "path"), page));
+      if (!Number.isSafeInteger(page) || page < 0)
+        return error(400, "page must be a whole number");
+      return fromResult(
+        await repo.log(param(url, "ref", "HEAD"), param(url, "path"), page),
+      );
     },
   },
   refs: {
@@ -118,10 +161,12 @@ export async function handleApi(context: ApiContext): Promise<Response> {
     const denied = await authorizeOwner(request, auth, identity);
     if (denied) return denied;
     const name = parts[1]!;
-    if (!/^(selfgit|repo(?:[1-9]|10)|verify-r2-20261117-a)$/.test(name)) return error(404, "Not found");
+    if (!/^(selfgit|repo(?:[1-9]|10)|verify-r2-20261117-a)$/.test(name))
+      return error(404, "Not found");
     const after = url.searchParams.get("after");
     if (after !== null) {
-      if (after !== "" && !/^[0-9a-f]{40}$/.test(after)) return error(400, "Invalid cursor");
+      if (after !== "" && !/^[0-9a-f]{40}$/.test(after))
+        return error(400, "Invalid cursor");
       return json(await env.REPOS.getByName(name).maintenanceHashes(after));
     }
     return json(await env.REPOS.getByName(name).maintenanceAudit());
@@ -129,42 +174,80 @@ export async function handleApi(context: ApiContext): Promise<Response> {
 
   if (parts[0] === "session" && parts.length === 1 && method === "GET") {
     const user = await currentUser(request, auth);
-    const session: Session = user ? { authenticated: true, login: user.login, avatarUrl: user.avatarUrl } : { authenticated: false };
+    const session: Session = user
+      ? { authenticated: true, login: user.login, avatarUrl: user.avatarUrl }
+      : { authenticated: false };
     return json(session);
   }
   if (parts[0] === "repos" && parts.length === 1 && method === "GET") {
     const names = await env.REGISTRY.getByName("registry").list();
-    const summaries = await Promise.all(names.map(async (name) => stub(env, name).summary(name)));
-    const failed = summaries.find((result) => !result.ok && result.status !== 404);
+    const summaries = await Promise.all(
+      names.map(async (name) => stub(env, name).summary(name)),
+    );
+    const failed = summaries.find(
+      (result) => !result.ok && result.status !== 404,
+    );
     if (failed && !failed.ok) return error(failed.status, failed.error);
-    return json(summaries.flatMap((result) => (result.ok ? [result.value] : [])));
+    return json(
+      summaries.flatMap((result) => (result.ok ? [result.value] : [])),
+    );
   }
   if (parts[0] === "repos" && parts.length === 1 && method === "POST") {
     const denied = await authorizeOwner(request, auth, identity);
     if (denied) return denied;
     const body: unknown = await request.json().catch(() => null);
-    if (!body || typeof body !== "object" || !("name" in body) || typeof body.name !== "string" || !isRepoName(body.name))
-      return error(400, "Use lowercase letters, numbers, dots, hyphens or underscores. Names must begin with a letter or number, and cannot end in a dot or .git.");
-    if (!(await env.REGISTRY.getByName("registry").create(body.name))) return error(409, "Repository already exists");
+    if (
+      !body ||
+      typeof body !== "object" ||
+      !("name" in body) ||
+      typeof body.name !== "string" ||
+      !isRepoName(body.name)
+    )
+      return error(
+        400,
+        "Use lowercase letters, numbers, dots, hyphens or underscores. Names must begin with a letter or number, and cannot end in a dot or .git.",
+      );
+    if (!(await env.REGISTRY.getByName("registry").create(body.name)))
+      return error(409, "Repository already exists");
     return json({ name: body.name }, 201);
   }
   if (parts[0] === "repos" && parts.length >= 2) {
     const name = parts[1]!;
     if (parts.length === 2 && method === "DELETE") {
-      if (name === PIPELINE_REPO) return error(409, "The pipeline repository cannot be deleted");
+      if (name === PIPELINE_REPO)
+        return error(409, "The pipeline repository cannot be deleted");
       const denied = await authorizeOwner(request, auth, identity);
       if (denied) return denied;
-      if (!isRepoName(name) || !(await env.REGISTRY.getByName("registry").beginDelete(name))) return error(404, `No repository named ${name}`);
+      if (
+        !isRepoName(name) ||
+        !(await env.REGISTRY.getByName("registry").beginDelete(name))
+      )
+        return error(404, `No repository named ${name}`);
       await stub(env, name).deleteRepository();
       return json(null);
     }
-    if (!isRepoName(name) || !(await env.REGISTRY.getByName("registry").exists(name))) return error(404, `No repository named ${name}`);
-    if (name === PIPELINE_REPO && parts.length === 3 && parts[2] === "runs" && method === "GET") return json(await stub(env, name).ciRuns());
+    if (
+      !isRepoName(name) ||
+      !(await env.REGISTRY.getByName("registry").exists(name))
+    )
+      return error(404, `No repository named ${name}`);
+    if (
+      name === PIPELINE_REPO &&
+      parts.length === 3 &&
+      parts[2] === "runs" &&
+      method === "GET"
+    )
+      return json(await stub(env, name).ciRuns());
     const [section = "", ...rest] = parts.slice(2);
     const route = REPO_ROUTES[section];
-    if (!route || rest.length > (section === "commits" ? 1 : 0)) return error(404, "Not found");
+    if (!route || rest.length > (section === "commits" ? 1 : 0))
+      return error(404, "Not found");
     const handler = route[method];
-    if (!handler) return new Response(null, { status: 405, headers: { Allow: Object.keys(route).join(", ") } });
+    if (!handler)
+      return new Response(null, {
+        status: 405,
+        headers: { Allow: Object.keys(route).join(", ") },
+      });
     return handler(context, stub(env, name), name, rest);
   }
   return error(404, "Not found");

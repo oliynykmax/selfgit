@@ -2,7 +2,6 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, spawnSync } from "bun";
 
-
 /**
  * Stock git-http-backend behind a minimal CGI bridge, as the Railway nginx config ran it.
  * Runs as its own process (`bun test/reference.ts <root> <repo>...`) because the tests block on git.
@@ -10,8 +9,23 @@ import { spawn, spawnSync } from "bun";
 function serve(root: string, repos: string[]) {
   mkdirSync(root, { recursive: true });
   for (const repo of repos) {
-    spawnSync(["git", "init", "-q", "--bare", "-b", "main", join(root, `${repo}.git`)]);
-    spawnSync(["git", "-C", join(root, `${repo}.git`), "config", "http.receivepack", "true"]);
+    spawnSync([
+      "git",
+      "init",
+      "-q",
+      "--bare",
+      "-b",
+      "main",
+      join(root, `${repo}.git`),
+    ]);
+    spawnSync([
+      "git",
+      "-C",
+      join(root, `${repo}.git`),
+      "config",
+      "http.receivepack",
+      "true",
+    ]);
   }
   return Bun.serve({
     port: 0,
@@ -43,7 +57,8 @@ function serve(root: string, repos: string[]) {
       let status = 200;
       for (const line of out.toString("latin1", 0, split).split("\r\n")) {
         const [name = "", ...value] = line.split(": ");
-        if (name.toLowerCase() === "status") status = Number.parseInt(value.join(": "), 10);
+        if (name.toLowerCase() === "status")
+          status = Number.parseInt(value.join(": "), 10);
         else headers.append(name, value.join(": "));
       }
       return new Response(out.subarray(split + 4), { status, headers });

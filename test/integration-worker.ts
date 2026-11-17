@@ -3,10 +3,14 @@ import { GitHubIdentity } from "../src/auth";
 import { finishLogin, startLogin, type OAuthConfig } from "../src/oauth";
 
 import { Repository as BaseRepository } from "../src/repo";
-const worker = createHandler(new GitHubIdentity(async (_url, init) => {
-  const token = new Headers(init.headers).get("Authorization");
-  return token === "Bearer test-owner-token" ? Response.json({ id: 12345 }) : new Response(null, { status: 401 });
-}));
+const worker = createHandler(
+  new GitHubIdentity(async (_url, init) => {
+    const token = new Headers(init.headers).get("Authorization");
+    return token === "Bearer test-owner-token"
+      ? Response.json({ id: 12345 })
+      : new Response(null, { status: 401 });
+  }),
+);
 export { Sessions } from "../src/index";
 import { Registry as BaseRegistry } from "../src/registry";
 
@@ -21,7 +25,15 @@ export class Registry extends BaseRegistry {
     return result;
   }
   async waitForDeletion(name: string): Promise<void> {
-    if (this.ctx.storage.sql.exec("SELECT 1 FROM repositories WHERE name = ? AND deleting = 1", name).toArray().length > 0) return;
+    if (
+      this.ctx.storage.sql
+        .exec(
+          "SELECT 1 FROM repositories WHERE name = ? AND deleting = 1",
+          name,
+        )
+        .toArray().length > 0
+    )
+      return;
     await new Promise<void>((resolve) => {
       const waiters = this.deletionWaiters.get(name) ?? [];
       waiters.push(resolve);
@@ -31,18 +43,29 @@ export class Registry extends BaseRegistry {
 }
 
 export class Repository extends BaseRepository {
-  private controls: { hold: boolean; entered: boolean; releases: Array<() => void> };
+  private controls: {
+    hold: boolean;
+    entered: boolean;
+    releases: Array<() => void>;
+  };
   constructor(ctx: DurableObjectState, env: Env) {
-    const controls: { hold: boolean; entered: boolean; releases: Array<() => void> } = { hold: false, entered: false, releases: [] };
+    const controls: {
+      hold: boolean;
+      entered: boolean;
+      releases: Array<() => void>;
+    } = { hold: false, entered: false, releases: [] };
     const bucket = new Proxy(env.OBJECTS, {
       get(target, property) {
-        if (property === "put") return async (...args: Parameters<R2Bucket["put"]>) => {
-          if (controls.hold) {
-            controls.entered = true;
-            await new Promise<void>((resolve) => { controls.releases.push(resolve); });
-          }
-          return target.put(...args);
-        };
+        if (property === "put")
+          return async (...args: Parameters<R2Bucket["put"]>) => {
+            if (controls.hold) {
+              controls.entered = true;
+              await new Promise<void>((resolve) => {
+                controls.releases.push(resolve);
+              });
+            }
+            return target.put(...args);
+          };
         const value = Reflect.get(target, property, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
@@ -50,31 +73,56 @@ export class Repository extends BaseRepository {
     super(ctx, { ...env, OBJECTS: bucket });
     this.controls = controls;
   }
-  holdWrites() { this.controls.hold = true; }
-  writeEntered() { return this.controls.entered; }
-  releaseWrites() { this.controls.hold = false; for (const release of this.controls.releases.splice(0)) release(); }
+  holdWrites() {
+    this.controls.hold = true;
+  }
+  writeEntered() {
+    return this.controls.entered;
+  }
+  releaseWrites() {
+    this.controls.hold = false;
+    for (const release of this.controls.releases.splice(0)) release();
+  }
   async remaining() {
-    const counts = ["refs", "objects", "object_chunks"].map((table) => this.ctx.storage.sql.exec<{ count: number }>(`SELECT count(*) AS count FROM ${table}`).one().count);
-    const objects = await this.env.OBJECTS.list({ prefix: `${this.ctx.id.toString()}/` });
+    const counts = ["refs", "objects", "object_chunks"].map(
+      (table) =>
+        this.ctx.storage.sql
+          .exec<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)
+          .one().count,
+    );
+    const objects = await this.env.OBJECTS.list({
+      prefix: `${this.ctx.id.toString()}/`,
+    });
     return { counts, keys: objects.objects.map((object) => object.key) };
   }
 }
 
-
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path.startsWith("/__test/")) {
-      const repo = env.REPOS.getByName(new URL(request.url).searchParams.get("repo") ?? "race-delete") as unknown as DurableObjectStub<Repository>;
+      const repo = env.REPOS.getByName(
+        new URL(request.url).searchParams.get("repo") ?? "race-delete",
+      ) as unknown as DurableObjectStub<Repository>;
       if (path === "/__test/deleting") {
-        const registry = env.REGISTRY.getByName("registry") as unknown as DurableObjectStub<Registry>;
-        await registry.waitForDeletion(new URL(request.url).searchParams.get("repo") ?? "race-delete");
+        const registry = env.REGISTRY.getByName(
+          "registry",
+        ) as unknown as DurableObjectStub<Registry>;
+        await registry.waitForDeletion(
+          new URL(request.url).searchParams.get("repo") ?? "race-delete",
+        );
         return new Response("ok");
       }
       if (path === "/__test/hold") await repo.holdWrites();
       if (path === "/__test/release") await repo.releaseWrites();
-      if (path === "/__test/entered") return Response.json(await repo.writeEntered());
-      if (path === "/__test/remaining") return Response.json(await repo.remaining());
+      if (path === "/__test/entered")
+        return Response.json(await repo.writeEntered());
+      if (path === "/__test/remaining")
+        return Response.json(await repo.remaining());
       return new Response("ok");
     }
     if (path === "/auth/github/login" || path === "/auth/github/callback") {
@@ -85,12 +133,19 @@ export default {
         sessions: env.SESSIONS.getByName("sessions"),
         waitUntil: (promise) => ctx.waitUntil(promise),
         fetcher: async (url) => {
-          if (url === "https://github.com/login/oauth/access_token") return Response.json({ access_token: "test-oauth-token" });
-          if (url === "https://api.github.com/user") return Response.json({ id: Number(env.GITHUB_OWNER_ID), login: "owner" });
+          if (url === "https://github.com/login/oauth/access_token")
+            return Response.json({ access_token: "test-oauth-token" });
+          if (url === "https://api.github.com/user")
+            return Response.json({
+              id: Number(env.GITHUB_OWNER_ID),
+              login: "owner",
+            });
           return new Response(null, { status: 204 });
         },
       };
-      return path.endsWith("/login") ? startLogin(request, auth) : finishLogin(request, auth);
+      return path.endsWith("/login")
+        ? startLogin(request, auth)
+        : finishLogin(request, auth);
     }
     return worker.fetch(request, env, ctx);
   },

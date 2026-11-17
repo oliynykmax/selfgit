@@ -1,7 +1,14 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { deflateSync, inflateSync } from "node:zlib";
-import { CorruptObject, hashObject, type ObjectStore, type ObjectType, TYPE_CODE, typeFromCode } from "./objects";
+import {
+  CorruptObject,
+  hashObject,
+  type ObjectStore,
+  type ObjectType,
+  TYPE_CODE,
+  typeFromCode,
+} from "./objects";
 
 const OFS_DELTA = 6;
 const REF_DELTA = 7;
@@ -29,7 +36,8 @@ function varint(buf: Buffer, start: number): [value: number, next: number] {
 export function applyDelta(base: Buffer, delta: Buffer): Buffer {
   const [baseSize, afterBase] = varint(delta, 0);
   const [resultSize, start] = varint(delta, afterBase);
-  if (baseSize !== base.length) throw new CorruptObject("delta base size mismatch");
+  if (baseSize !== base.length)
+    throw new CorruptObject("delta base size mismatch");
   const out = Buffer.allocUnsafe(resultSize);
   let written = 0;
   let pos = start;
@@ -38,14 +46,18 @@ export function applyDelta(base: Buffer, delta: Buffer): Buffer {
     if (op & 0x80) {
       let offset = 0;
       let size = 0;
-      for (let bit = 0; bit < 4; bit++) if (op & (1 << bit)) offset += delta[pos++]! * 2 ** (8 * bit);
-      for (let bit = 0; bit < 3; bit++) if (op & (0x10 << bit)) size += delta[pos++]! << (8 * bit);
+      for (let bit = 0; bit < 4; bit++)
+        if (op & (1 << bit)) offset += delta[pos++]! * 2 ** (8 * bit);
+      for (let bit = 0; bit < 3; bit++)
+        if (op & (0x10 << bit)) size += delta[pos++]! << (8 * bit);
       if (size === 0) size = 0x10000;
-      if (offset + size > base.length || written + size > resultSize) throw new CorruptObject("delta copy out of range");
+      if (offset + size > base.length || written + size > resultSize)
+        throw new CorruptObject("delta copy out of range");
       base.copy(out, written, offset, offset + size);
       written += size;
     } else if (op > 0) {
-      if (pos + op > delta.length || written + op > resultSize) throw new CorruptObject("delta insert out of range");
+      if (pos + op > delta.length || written + op > resultSize)
+        throw new CorruptObject("delta insert out of range");
       delta.copy(out, written, pos, pos + op);
       written += op;
       pos += op;
@@ -53,7 +65,8 @@ export function applyDelta(base: Buffer, delta: Buffer): Buffer {
       throw new CorruptObject("delta opcode 0");
     }
   }
-  if (written !== resultSize) throw new CorruptObject("delta result size mismatch");
+  if (written !== resultSize)
+    throw new CorruptObject("delta result size mismatch");
   return out;
 }
 
@@ -61,26 +74,42 @@ export function applyDelta(base: Buffer, delta: Buffer): Buffer {
  * Inflates one zlib stream starting at `pos` and reports where it ended. The window is bounded by
  * zlib's worst-case expansion so a large pack is not copied once per entry.
  */
-function inflateAt(pack: Buffer, pos: number, end: number, size: number): { data: Buffer; next: number } {
+function inflateAt(
+  pack: Buffer,
+  pos: number,
+  end: number,
+  size: number,
+): { data: Buffer; next: number } {
   const bound = Math.min(end, pos + size + (size >>> 9) + 64);
   for (const limit of bound < end ? [bound, end] : [end]) {
     try {
-      const { buffer, engine } = inflateSync(pack.subarray(pos, limit), { info: true }) as unknown as {
+      const { buffer, engine } = inflateSync(pack.subarray(pos, limit), {
+        info: true,
+      }) as unknown as {
         buffer: Buffer;
         engine: { bytesWritten: number };
       };
       return { data: buffer, next: pos + engine.bytesWritten };
     } catch (error) {
-      if (limit === end) throw new CorruptObject(`bad zlib data at ${pos}: ${(error as Error).message}`);
+      if (limit === end)
+        throw new CorruptObject(
+          `bad zlib data at ${pos}: ${(error as Error).message}`,
+        );
     }
   }
   throw new CorruptObject("unreachable");
 }
 
 class BaseCache {
-  private readonly entries = new Map<string, { type: ObjectType; content: Buffer }>();
+  private readonly entries = new Map<
+    string,
+    { type: ObjectType; content: Buffer }
+  >();
   private bytes = 0;
-  constructor(private readonly store: ObjectStore, private readonly limit = 32 << 20) {}
+  constructor(
+    private readonly store: ObjectStore,
+    private readonly limit = 32 << 20,
+  ) {}
 
   async get(oid: string): Promise<{ type: ObjectType; content: Buffer }> {
     const hit = this.entries.get(oid);
@@ -106,21 +135,32 @@ class BaseCache {
  * Stores every object in a received pack, resolving OFS_DELTA and REF_DELTA entries (including thin
  * packs whose bases already live in the store). Returns the ids of objects the store did not have.
  */
-export async function ingestPack(store: ObjectStore, pack: Buffer): Promise<Set<string>> {
+export async function ingestPack(
+  store: ObjectStore,
+  pack: Buffer,
+): Promise<Set<string>> {
   const added = new Set<string>();
   if (pack.length === 0) return added;
-  if (pack.length < 32 || pack.toString("latin1", 0, 4) !== "PACK") throw new CorruptObject("bad pack header");
+  if (pack.length < 32 || pack.toString("latin1", 0, 4) !== "PACK")
+    throw new CorruptObject("bad pack header");
   const version = pack.readUInt32BE(4);
-  if (version !== 2 && version !== 3) throw new CorruptObject(`unsupported pack version ${version}`);
+  if (version !== 2 && version !== 3)
+    throw new CorruptObject(`unsupported pack version ${version}`);
   const count = pack.readUInt32BE(8);
   const end = pack.length - 20;
   const checksum = createHash("sha1").update(pack.subarray(0, end)).digest();
-  if (!checksum.equals(pack.subarray(end))) throw new CorruptObject("pack checksum mismatch");
+  if (!checksum.equals(pack.subarray(end)))
+    throw new CorruptObject("pack checksum mismatch");
 
   const resolved = new Map<number, string>();
   const pending: PendingDelta[] = [];
   const cache = new BaseCache(store);
-  const keep = async (oid: string, type: ObjectType, content: Buffer, zdata: Uint8Array) => {
+  const keep = async (
+    oid: string,
+    type: ObjectType,
+    content: Buffer,
+    zdata: Uint8Array,
+  ) => {
     if (await store.put(oid, type, content, zdata)) added.add(oid);
   };
 
@@ -151,7 +191,8 @@ export async function ingestPack(store: ObjectStore, pack: Buffer): Promise<Set<
       pos += 20;
     }
     const { data, next } = inflateAt(pack, pos, end, size);
-    if (data.length !== size) throw new CorruptObject(`object at ${offset} has wrong size`);
+    if (data.length !== size)
+      throw new CorruptObject(`object at ${offset} has wrong size`);
     const type = typeFromCode(code);
     if (type) {
       const oid = hashObject(type, data);
@@ -166,11 +207,16 @@ export async function ingestPack(store: ObjectStore, pack: Buffer): Promise<Set<
   }
   if (pos !== end) throw new CorruptObject("pack has trailing data");
 
-  for (let progress = true; pending.length > 0 && progress; ) {
+  for (let progress = true; pending.length > 0 && progress;) {
     progress = false;
-    for (let i = 0; i < pending.length; ) {
+    for (let i = 0; i < pending.length;) {
       const entry = pending[i]!;
-      const baseOid = "offset" in entry.base ? resolved.get(entry.base.offset) : await store.has(entry.base.oid) ? entry.base.oid : undefined;
+      const baseOid =
+        "offset" in entry.base
+          ? resolved.get(entry.base.offset)
+          : (await store.has(entry.base.oid))
+            ? entry.base.oid
+            : undefined;
       if (!baseOid) {
         i++;
         continue;
@@ -186,7 +232,8 @@ export async function ingestPack(store: ObjectStore, pack: Buffer): Promise<Set<
       progress = true;
     }
   }
-  if (pending.length > 0) throw new CorruptObject(`${pending.length} unresolved deltas`);
+  if (pending.length > 0)
+    throw new CorruptObject(`${pending.length} unresolved deltas`);
   return added;
 }
 
@@ -204,7 +251,10 @@ function entryHeader(type: ObjectType, size: number): Buffer {
 }
 
 /** Yields a version 2 pack of undeltified objects, copying stored zlib data without recompressing. */
-export async function* writePack(store: ObjectStore, oids: string[]): AsyncGenerator<Buffer> {
+export async function* writePack(
+  store: ObjectStore,
+  oids: string[],
+): AsyncGenerator<Buffer> {
   const hash = createHash("sha1");
   const emit = (chunk: Buffer) => {
     hash.update(chunk);
