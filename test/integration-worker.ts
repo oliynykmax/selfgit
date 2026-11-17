@@ -39,7 +39,7 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path.startsWith("/__test/")) {
-      const repo = env.REPOS.getByName("race-delete") as unknown as DurableObjectStub<Repository>;
+      const repo = env.REPOS.getByName(new URL(request.url).searchParams.get("repo") ?? "race-delete") as unknown as DurableObjectStub<Repository>;
       if (path === "/__test/hold") await repo.holdWrites();
       if (path === "/__test/release") await repo.releaseWrites();
       if (path === "/__test/entered") return Response.json(await repo.writeEntered());
