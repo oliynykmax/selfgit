@@ -123,6 +123,19 @@ afterAll(async () => {
 });
 
 describe("smart HTTP Git on a Durable Object", () => {
+  test("maintenance audit requires owner and only accepts named targets", async () => {
+    const path = `${base}/api/maintenance/repo1`;
+    expect((await fetch(path)).status).toBe(403);
+    expect((await fetch(path, { headers: { Authorization: "Bearer invalid-token" } })).status).toBe(401);
+    const headers = { Authorization: `Bearer ${TOKEN}` };
+    expect((await fetch(`${base}/api/maintenance/arbitrary`, { headers })).status).toBe(404);
+    const response = await fetch(path, { headers });
+    expect(response.status).toBe(200);
+    const audit = await response.json();
+    expect(audit.objects.count).toBeGreaterThanOrEqual(0);
+    expect(audit.r2Count).toBeGreaterThanOrEqual(0);
+  });
+
   test("management API accepts the owner's GitHub bearer token without a browser session", async () => {
     expect((await createRepo("bearer-repo", { Authorization: `Bearer ${TOKEN}` })).status).toBe(201);
     expect((await createRepo("invalid-bearer", { Authorization: "Bearer invalid-token" })).status).toBe(401);

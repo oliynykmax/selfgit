@@ -52,6 +52,27 @@ export class Repository extends DurableObject<Env> {
     });
   }
 
+  async maintenanceHashes(after: string) {
+    return this.serialize(() => this.store.auditR2(after));
+  }
+
+  async maintenanceAudit() {
+    return this.serialize(async () => {
+      const sql = this.ctx.storage.sql;
+      const objects = sql.exec<{ count: number; inline: number; bytes: number }>("SELECT count(*) AS count, count(zdata) AS inline, coalesce(sum(length(zdata)), 0) AS bytes FROM objects").one();
+      const chunks = sql.exec<{ count: number; bytes: number }>("SELECT count(*) AS count, coalesce(sum(length(data)), 0) AS bytes FROM object_chunks").one();
+      const refs = sql.exec<{ count: number }>("SELECT count(*) AS count FROM refs").one().count;
+      let r2Count = 0;
+      let cursor: string | undefined;
+      do {
+        const page = await this.env.OBJECTS.list({ prefix: `${this.ctx.id.toString()}/`, cursor });
+        r2Count += page.objects.length;
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+      return { id: this.ctx.id.toString(), deleted: this.deleted(), objects, chunks, refs, r2Count };
+    });
+  }
+
   override async fetch(request: Request): Promise<Response> {
     return this.serialize(async () => {
       if (this.deleted()) return new Response("Not found\n", { status: 404 });

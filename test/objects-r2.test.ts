@@ -91,3 +91,17 @@ test("repository cleanup retries paginated failures without touching other prefi
   await deleteRepoObjects(bucket, "repo");
   expect([...keys]).toEqual(["repo-other/a"]);
 });
+
+test("R2 audit reports verified, missing and corrupt objects without changing SQL", async () => {
+  const { db, data, store } = setup();
+  const contents = ["valid", "missing", "corrupt"].map((value) => Buffer.from(value));
+  const ids = contents.map((content) => hashObject("blob", content));
+  for (let i = 0; i < ids.length; i++) {
+    db.query("INSERT INTO objects (oid, type, size, links, in_r2) VALUES (?, 3, ?, '', 1)").run(ids[i]!, contents[i]!.length);
+  }
+  data.set(`repo-id/${ids[0]}`, deflateSync(contents[0]!));
+  data.set(`repo-id/${ids[2]}`, deflateSync(Buffer.from("wrong")));
+  const audit = await store.auditR2("");
+  expect(Object.fromEntries(audit.results.map((item) => [item.oid, item.status]))).toEqual({ [ids[0]!]: "valid", [ids[1]!]: "missing", [ids[2]!]: "corrupt" });
+  expect(db.query("SELECT count(*) AS count FROM objects").get()).toEqual({ count: 3 });
+});
