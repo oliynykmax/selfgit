@@ -215,7 +215,7 @@ function collectObjects(store: ObjectStore, wants: string[], common: string[], c
   return order;
 }
 
-export function uploadPack(store: ObjectStore, body: Buffer): ReadableStream<Uint8Array> | Buffer {
+export async function uploadPack(store: ObjectStore, body: Buffer): Promise<ReadableStream<Uint8Array> | Buffer> {
   const request = parseUploadRequest(body);
   const { lines } = advertisedRefs(store, "git-upload-pack");
   const tips = new Set(lines.map((line) => line.oid));
@@ -236,7 +236,8 @@ export function uploadPack(store: ObjectStore, body: Buffer): ReadableStream<Uin
 
   if (!request.negotiates) return Buffer.concat(out);
   const detailed = request.caps.has("multi_ack_detailed");
-  const common = request.haves.filter((oid) => store.has(oid));
+  const common: string[] = [];
+  for (const oid of request.haves) if (await store.has(oid)) common.push(oid);
   for (const oid of common) {
     if (detailed) out.push(pkt(`ACK ${oid} common\n`));
     else if (oid === common[0]) out.push(pkt(`ACK ${oid}\n`));
@@ -254,14 +255,14 @@ export function uploadPack(store: ObjectStore, body: Buffer): ReadableStream<Uin
   const preamble = Buffer.concat(out);
   let started = false;
   return new ReadableStream<Uint8Array>({
-    pull(controller) {
+    async pull(controller) {
       if (!started) {
         started = true;
         controller.enqueue(preamble);
       }
       const batch: Buffer[] = [];
       let size = 0;
-      for (let step = pack.next(); ; step = pack.next()) {
+      for (let step = await pack.next(); ; step = await pack.next()) {
         if (step.done) {
           if (batch.length > 0) enqueue(controller, Buffer.concat(batch), mode);
           if (mode) controller.enqueue(FLUSH);
@@ -298,7 +299,7 @@ export function validRefName(name: string): boolean {
 /** A pushed object links to something neither the pack nor the repo holds. */
 class MissingObjects extends Error {}
 
-export function receivePack(store: ObjectStore, transaction: (fn: () => void) => void, body: Buffer): Buffer {
+export async function receivePack(store: ObjectStore, transaction: (fn: () => void) => void, body: Buffer): Promise<Buffer> {
   const reader = new PktReader(body);
   const commands: Command[] = [];
   let caps = new Set<string>();
@@ -315,19 +316,25 @@ export function receivePack(store: ObjectStore, transaction: (fn: () => void) =>
   const results = new Map<string, string>();
   let unpack = "ok";
   try {
+    if (commands.some((command) => command.new !== ZERO_OID)) await ingestPack(store, reader.rest());
+    const checked = new Set<string>();
+    const pending = commands.filter((command) => command.new !== ZERO_OID).map((command) => command.new);
+    while (pending.length) {
+      const oid = pending.pop()!;
+      if (checked.has(oid)) continue;
+      checked.add(oid);
+      const info = store.info(oid);
+      if (!info || !(await store.has(oid))) throw new MissingObjects();
+      pending.push(...info.links);
+    }
     transaction(() => {
-      const added = commands.some((command) => command.new !== ZERO_OID) ? ingestPack(store, reader.rest()) : new Set<string>();
-      // Every stored object stays closed under its links, so a ref tip that exists is fully connected.
-      for (const oid of added) {
-        if (!store.info(oid)!.links.every((link) => store.has(link))) throw new MissingObjects();
-      }
       const refs = store.refs();
       for (const command of commands) {
         const current = refs.get(command.ref) ?? ZERO_OID;
         if (!validRefName(command.ref)) results.set(command.ref, "funny refname");
         else if (results.has(command.ref)) results.set(command.ref, "duplicate ref update");
         else if (current !== command.old) results.set(command.ref, "failed to update ref");
-        else if (command.new !== ZERO_OID && !store.has(command.new)) results.set(command.ref, "missing necessary objects");
+        else if (command.new !== ZERO_OID && !store.info(command.new)) results.set(command.ref, "missing necessary objects");
         else results.set(command.ref, "ok");
       }
       const failed = [...results.values()].some((result) => result !== "ok");

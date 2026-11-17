@@ -19,7 +19,7 @@ export type Result<T> = { ok: true; value: T } | { ok: false; status: 400 | 404 
 
 /** One bare repository: objects and refs in this Durable Object's SQLite storage. */
 export class Repository extends DurableObject<Env> {
-  private readonly store = new ObjectStore(this.ctx.storage.sql);
+  private readonly store = new ObjectStore(this.ctx.storage.sql, this.env.OBJECTS, this.ctx.id.toString());
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -34,8 +34,8 @@ export class Repository extends DurableObject<Env> {
       const body = await readBody(request);
       const result =
         service === "git-upload-pack"
-          ? uploadPack(this.store, body)
-          : receivePack(this.store, (fn) => this.ctx.storage.transactionSync(fn), body);
+          ? await uploadPack(this.store, body)
+          : await receivePack(this.store, (fn) => this.ctx.storage.transactionSync(fn), body);
       return new Response(result, { headers: { "Content-Type": `application/x-${service}-result`, ...NO_CACHE } });
     } catch (error) {
       if (error instanceof ProtocolError || error instanceof CorruptObject) {
@@ -45,9 +45,9 @@ export class Repository extends DurableObject<Env> {
     }
   }
 
-  private browse<T>(read: (browser: Browser) => T): Result<T> {
+  private async browse<T>(read: (browser: Browser) => Promise<T>): Promise<Result<T>> {
     try {
-      return { ok: true, value: read(new Browser(this.store)) };
+      return { ok: true, value: await read(new Browser(this.store)) };
     } catch (error) {
       if (error instanceof NotFound) return { ok: false, status: 404, error: error.message };
       throw error;
@@ -70,8 +70,8 @@ export class Repository extends DurableObject<Env> {
     return this.browse((browser) => browser.blobView(revision, path));
   }
 
-  raw(revision: string, path: string): Result<{ content: Uint8Array; binary: boolean }> {
-    const result = this.browse((browser) => browser.raw(revision, path));
+  async raw(revision: string, path: string): Promise<Result<{ content: Uint8Array; binary: boolean }>> {
+    const result = await this.browse((browser) => browser.raw(revision, path));
     if (!result.ok) return result;
     if (result.value === "too-large") return { ok: false, status: 413, error: "File is too large to view in the browser; clone the repository instead" };
     return { ok: true, value: result.value };

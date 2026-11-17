@@ -82,10 +82,10 @@ class BaseCache {
   private bytes = 0;
   constructor(private readonly store: ObjectStore, private readonly limit = 32 << 20) {}
 
-  get(oid: string): { type: ObjectType; content: Buffer } {
+  async get(oid: string): Promise<{ type: ObjectType; content: Buffer }> {
     const hit = this.entries.get(oid);
     if (hit) return hit;
-    const object = this.store.read(oid);
+    const object = await this.store.read(oid);
     if (!object) throw new CorruptObject(`missing delta base ${oid}`);
     this.add(oid, object);
     return object;
@@ -106,7 +106,7 @@ class BaseCache {
  * Stores every object in a received pack, resolving OFS_DELTA and REF_DELTA entries (including thin
  * packs whose bases already live in the store). Returns the ids of objects the store did not have.
  */
-export function ingestPack(store: ObjectStore, pack: Buffer): Set<string> {
+export async function ingestPack(store: ObjectStore, pack: Buffer): Promise<Set<string>> {
   const added = new Set<string>();
   if (pack.length === 0) return added;
   if (pack.length < 32 || pack.toString("latin1", 0, 4) !== "PACK") throw new CorruptObject("bad pack header");
@@ -120,8 +120,8 @@ export function ingestPack(store: ObjectStore, pack: Buffer): Set<string> {
   const resolved = new Map<number, string>();
   const pending: PendingDelta[] = [];
   const cache = new BaseCache(store);
-  const keep = (oid: string, type: ObjectType, content: Buffer, zdata: Uint8Array) => {
-    if (store.put(oid, type, content, zdata)) added.add(oid);
+  const keep = async (oid: string, type: ObjectType, content: Buffer, zdata: Uint8Array) => {
+    if (await store.put(oid, type, content, zdata)) added.add(oid);
   };
 
   let pos = 12;
@@ -155,7 +155,7 @@ export function ingestPack(store: ObjectStore, pack: Buffer): Set<string> {
     const type = typeFromCode(code);
     if (type) {
       const oid = hashObject(type, data);
-      keep(oid, type, data, pack.subarray(pos, next));
+      await keep(oid, type, data, pack.subarray(pos, next));
       resolved.set(offset, oid);
     } else if (base) {
       pending.push({ offset, base, delta: data });
@@ -170,15 +170,15 @@ export function ingestPack(store: ObjectStore, pack: Buffer): Set<string> {
     progress = false;
     for (let i = 0; i < pending.length; ) {
       const entry = pending[i]!;
-      const baseOid = "offset" in entry.base ? resolved.get(entry.base.offset) : store.has(entry.base.oid) ? entry.base.oid : undefined;
+      const baseOid = "offset" in entry.base ? resolved.get(entry.base.offset) : await store.has(entry.base.oid) ? entry.base.oid : undefined;
       if (!baseOid) {
         i++;
         continue;
       }
-      const base = cache.get(baseOid);
+      const base = await cache.get(baseOid);
       const content = applyDelta(base.content, entry.delta);
       const oid = hashObject(base.type, content);
-      keep(oid, base.type, content, deflateSync(content));
+      await keep(oid, base.type, content, deflateSync(content));
       cache.add(oid, { type: base.type, content });
       resolved.set(entry.offset, oid);
       pending[i] = pending[pending.length - 1]!;
@@ -204,7 +204,7 @@ function entryHeader(type: ObjectType, size: number): Buffer {
 }
 
 /** Yields a version 2 pack of undeltified objects, copying stored zlib data without recompressing. */
-export function* writePack(store: ObjectStore, oids: string[]): Generator<Buffer> {
+export async function* writePack(store: ObjectStore, oids: string[]): AsyncGenerator<Buffer> {
   const hash = createHash("sha1");
   const emit = (chunk: Buffer) => {
     hash.update(chunk);
@@ -219,7 +219,7 @@ export function* writePack(store: ObjectStore, oids: string[]): Generator<Buffer
     const info = store.info(oid);
     if (!info) throw new CorruptObject(`missing object ${oid}`);
     yield emit(entryHeader(info.type, info.size));
-    for (const chunk of store.zdata(oid)) yield emit(chunk);
+    yield emit(await store.zdata(oid));
   }
   yield hash.digest();
 }
