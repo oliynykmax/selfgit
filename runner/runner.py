@@ -22,7 +22,8 @@ HEARTBEAT_INTERVAL = 60
 def request(endpoint, body):
     data = json.dumps(body).encode()
     req = urllib.request.Request(API + '/api/runner/' + endpoint, data=data,
-                                 headers={'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json'})
+                                 headers={'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json',
+                                          'User-Agent': 'selfgit-ci/1.0'})
     with urllib.request.urlopen(req, timeout=20) as response:
         return json.load(response)
 
