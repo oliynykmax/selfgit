@@ -4,3 +4,6 @@ node_modules/
 .env
 .DS_Store
 web/dist/
+.tmp/
+.audit/
+__pycache__/
