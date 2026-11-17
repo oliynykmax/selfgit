@@ -43,6 +43,7 @@ export class Repository extends DurableObject<Env> {
   async deleteRepository(): Promise<void> {
     if (!this.deleted()) this.ctx.storage.sql.exec("INSERT INTO repository_tombstone VALUES (1)");
     await this.serialize(async () => {
+      this.store.clearReadCache();
       await deleteRepoObjects(this.env.OBJECTS, this.ctx.id.toString());
       this.ctx.storage.transactionSync(() => {
         this.ctx.storage.sql.exec("DELETE FROM refs");
