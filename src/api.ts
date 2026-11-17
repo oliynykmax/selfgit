@@ -3,6 +3,7 @@ import { imageType } from "./browse";
 import { currentUser, type OAuthConfig, sameOrigin } from "./oauth";
 import type { Result } from "./repo";
 import { GitHubIdentity } from "./auth";
+import { treeSnapshotKey } from "./tree-snapshot";
 
 const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
 
@@ -71,7 +72,17 @@ type Handler = (context: ApiContext, repo: RepoStub, name: RepoName, rest: strin
 
 const REPO_ROUTES: Record<string, Partial<Record<string, Handler>>> = {
   "": { GET: async (_c, repo, name) => fromResult(await repo.refs(name)) },
-  tree: { GET: async ({ url }, repo) => fromResult(await repo.tree(param(url, "ref", "HEAD"), param(url, "path"))) },
+  tree: { GET: async ({ url, env }, repo) => {
+    const path = param(url, "path");
+    const descriptor = await repo.treeDescriptor(param(url, "ref", "HEAD"));
+    if (!descriptor.ok) return fromResult(descriptor);
+    const { repoId, commit } = descriptor.value;
+    const snapshot = await env.OBJECTS.get(treeSnapshotKey(repoId, commit, path));
+    if (snapshot) return new Response(snapshot.body, { headers: { ...JSON_HEADERS, "X-Tree-Snapshot": "worker-hit" } });
+    const response = fromResult(await repo.tree(commit, path));
+    response.headers.set("X-Tree-Snapshot", "miss");
+    return response;
+  } },
   blob: { GET: async ({ url }, repo) => fromResult(await repo.blob(param(url, "ref", "HEAD"), param(url, "path"))) },
   raw: {
     GET: async ({ url }, repo) => {

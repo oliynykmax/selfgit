@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { deflateSync } from "node:zlib";
 import { Browser } from "../src/browse";
+import { treeSnapshot } from "../src/tree-snapshot";
 import { hashObject, ObjectStore, type ObjectType } from "../src/objects";
 
 test("tree history retains last commits while avoiding repeated object reads", async () => {
@@ -13,8 +14,8 @@ test("tree history retains last commits while avoiding repeated object reads", a
   const data = new Map<string, Uint8Array>();
   let reads = 0;
   const bucket = {
-    async put(key: string, value: Uint8Array) { data.set(key, Uint8Array.from(value)); },
-    async get(key: string) { reads++; const value = data.get(key); return value ? { arrayBuffer: async () => Uint8Array.from(value).buffer } : null; },
+    async put(key: string, value: Uint8Array | string) { data.set(key, typeof value === "string" ? Buffer.from(value) : Uint8Array.from(value)); },
+    async get(key: string) { reads++; const value = data.get(key); return value ? { arrayBuffer: async () => Uint8Array.from(value).buffer, json: async () => JSON.parse(Buffer.from(value).toString()) } : null; },
     async head(key: string) { return data.has(key) ? {} : null; },
   } as unknown as R2Bucket;
   const store = new ObjectStore(sql, bucket, "repo");
@@ -55,4 +56,17 @@ test("tree history retains last commits while avoiding repeated object reads", a
   const moved = await new Browser(store).treeView("main", "");
   expect(moved.commit.oid).toBe(first);
   expect(moved.entries.every((entry) => entry.lastCommit?.oid === first)).toBe(true);
+  store.setRef("refs/heads/main", parent);
+  const snapshot = await treeSnapshot(new Browser(store), bucket, "repo", "main", "");
+  expect(snapshot).toEqual(cold);
+  store.clearReadCache();
+  reads = 0;
+  expect(await treeSnapshot(new Browser(store), bucket, "repo", "main", "/")).toEqual(cold);
+  expect(reads).toBe(1);
+  store.setRef("refs/heads/main", first);
+  expect(await treeSnapshot(new Browser(store), bucket, "repo", "main", "")).toEqual(moved);
+  store.setRef("refs/heads/new", parent);
+  expect(await treeSnapshot(new Browser(store), bucket, "repo", "new", "")).toEqual(cold);
+  expect([...data.keys()].filter((key) => key.includes("tree-snapshots"))).toHaveLength(2);
+
 });

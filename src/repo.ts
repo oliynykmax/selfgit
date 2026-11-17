@@ -4,6 +4,7 @@ import type { RepoName } from "./api-types";
 import { Browser, NotFound } from "./browse";
 import { CorruptObject, deleteRepoObjects, ObjectStore, ZERO_OID } from "./objects";
 import { ProtocolError } from "./pktline";
+import { treeSnapshot } from "./tree-snapshot";
 import { advertise, headTarget, receivePack, type Service, uploadPack } from "./protocol";
 
 const NO_CACHE = { "Cache-Control": "no-cache, max-age=0, must-revalidate", Pragma: "no-cache", Expires: "Fri, 01 Jan 1980 00:00:00 GMT" };
@@ -126,7 +127,11 @@ export class Repository extends DurableObject<Env> {
   }
 
   tree(revision: string, path: string) {
-    return this.browse((browser) => browser.treeView(revision, path));
+    return this.browse((browser) => treeSnapshot(browser, this.env.OBJECTS, this.ctx.id.toString(), revision, path));
+  }
+
+  treeDescriptor(revision: string) {
+    return this.browse(async (browser) => ({ repoId: this.ctx.id.toString(), commit: browser.resolve(revision) }));
   }
 
   blob(revision: string, path: string) {

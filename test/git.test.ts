@@ -195,6 +195,40 @@ describe("smart HTTP Git on a Durable Object", () => {
       push.kill();
     }
   });
+  test("deletion waits for an admitted snapshot write and removes it", async () => {
+    expect((await createRepo("race-snapshot")).status).toBe(201);
+    const src = newRepo("race-snapshot");
+    commit(src, "README.md", "snapshot");
+    ok(src, "push", "-q", "origin", "main");
+    const control = (name: string) => fetch(`${base}/__test/${name}?repo=race-snapshot`);
+    await control("hold");
+    const tree = fetch(`${base}/api/repos/race-snapshot/tree?ref=main`);
+    try {
+      let entered = false;
+      for (let i = 0; i < 100 && !entered; i++) {
+        entered = await (await control("entered")).json() as boolean;
+        if (!entered) await Bun.sleep(50);
+      }
+      expect(entered).toBe(true);
+      let finished = false;
+      const deletion = fetch(`${base}/api/repos/race-snapshot`, { method: "DELETE", headers: { Origin: base, Cookie: ownerCookie } }).then((response) => { finished = true; return response; });
+      let hidden = false;
+      for (let i = 0; i < 100 && !hidden; i++) {
+        hidden = (await fetch(`${base}/api/repos/race-snapshot`)).status === 404;
+        if (!hidden) await Bun.sleep(50);
+      }
+      expect(hidden).toBe(true);
+      expect(finished).toBe(false);
+      await control("release");
+      expect((await tree).status).toBe(200);
+      expect((await deletion).status).toBe(200);
+      expect(await (await control("remaining")).json()).toEqual({ counts: [0, 0, 0], keys: [] });
+      expect((await fetch(`${base}/api/repos/race-snapshot/tree?ref=main`)).status).toBe(404);
+      expect((await createRepo("race-snapshot")).status).toBe(409);
+    } finally {
+      await control("release");
+    }
+  });
   test("repository creation requires the owner and a same-origin request", async () => {
     expect((await createRepo("anonymous", { Origin: base })).status).toBe(401);
     expect((await createRepo("cross-site", { Origin: "https://evil.example", Cookie: ownerCookie })).status).toBe(403);
@@ -488,7 +522,7 @@ describe("smart HTTP Git on a Durable Object", () => {
 
     const api = async (path: string) => {
       const response = await fetch(`${base}/api/repos/fixture10${path}`);
-      return { status: response.status, body: (await response.json()) as any };
+      return { status: response.status, snapshot: response.headers.get("X-Tree-Snapshot"), body: (await response.json()) as any };
     };
     const refs = await api("");
     expect(refs.body.defaultBranch).toBe("main");
@@ -504,6 +538,15 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect(tree.body.entries[0].lastCommit.oid).toBe(second);
     expect(tree.body.readme).toEqual({ path: "README.md", markdown: true, text: "# Week\n\n<script>x</script>\n" });
 
+    expect(tree.snapshot).toBe("miss");
+    const cachedTree = await api("/tree?ref=main");
+    expect(cachedTree.snapshot).toBe("worker-hit");
+    expect(cachedTree.body).toEqual(tree.body);
+    const nested = await api("/tree?ref=main&path=src");
+    expect(nested.body.entries[0].lastCommit.oid).toBe(second);
+    const cachedNested = await api("/tree?ref=main&path=%2Fsrc%2F");
+    expect(cachedNested.snapshot).toBe("worker-hit");
+    expect(cachedNested.body).toEqual(nested.body);
     expect((await api("/tree?ref=topic/x")).body.commit.oid).toBe(topic);
     expect((await api("/tree?ref=main&path=nope")).status).toBe(404);
     expect((await api("/tree?ref=missing")).status).toBe(404);
@@ -537,13 +580,21 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect((await fetch(deleteUrl, { method: "DELETE", headers: { Origin: "https://evil.example" } })).status).toBe(403);
     expect(ok(work, "ls-remote", `${base}/fixture10.git`, "refs/heads/topic/x")).toContain(topic);
     expect((await fetch(`${base}/api/session`).then((response) => response.json()))).toEqual({ authenticated: false });
+    ok(src, "push", "-q", "--force", "origin", `${second}:refs/heads/main`);
+    const forced = await api("/tree?ref=main");
+    expect(forced.body.commit.oid).toBe(second);
+    expect(forced.body.entries.map((entry: { name: string }) => entry.name)).toEqual(["src", "README.md"]);
+    ok(src, "push", "-q", "origin", "topic/x:refs/heads/main");
+    expect((await api("/tree?ref=main")).body.commit.oid).toBe(topic);
   });
 
   test("data survives a restart of the local runtime", async () => {
     const before = ok(work, "ls-remote", `${base}/fixture3.git`);
+    const treeBefore = await (await fetch(`${base}/api/repos/fixture10/tree?ref=main`)).json();
     await stopServer();
     await startServer();
     expect(ok(work, "ls-remote", `${base}/fixture3.git`)).toBe(before);
+    expect(await (await fetch(`${base}/api/repos/fixture10/tree?ref=main`)).json()).toEqual(treeBefore);
     const copy = clone("fixture4");
     ok(copy, "fsck", "--full");
   }, 60_000);
