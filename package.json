@@ -9,7 +9,8 @@
     "deploy": "vite build && wrangler deploy",
     "types": "wrangler types",
     "typecheck": "tsc -p . && tsc -p web",
-    "test": "vite build && bun test --timeout 300000"
+    "test": "vite build && bun test --timeout 300000",
+    "test:ci": "vite build && bun test --timeout 120000 --path-ignore-patterns test/git.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261116.1",
