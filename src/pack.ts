@@ -4,11 +4,13 @@ import { deflateSync, inflateSync } from "node:zlib";
 import {
   CorruptObject,
   hashObject,
+  MAX_DELTA_DEPTH,
   type ObjectStore,
   type ObjectType,
   TYPE_CODE,
   typeFromCode,
 } from "./objects";
+import { applyDelta } from "./delta";
 
 const OFS_DELTA = 6;
 const REF_DELTA = 7;
@@ -18,57 +20,8 @@ interface PendingDelta {
   offset: number;
   base: { offset: number } | { oid: string };
   delta: Buffer;
-}
-
-function varint(buf: Buffer, start: number): [value: number, next: number] {
-  let value = 0;
-  let shift = 0;
-  let pos = start;
-  let byte: number;
-  do {
-    if (pos >= buf.length) throw new CorruptObject("truncated delta header");
-    byte = buf[pos++]!;
-    value += (byte & 0x7f) * 2 ** shift;
-    shift += 7;
-  } while (byte & 0x80);
-  return [value, pos];
-}
-
-export function applyDelta(base: Buffer, delta: Buffer): Buffer {
-  const [baseSize, afterBase] = varint(delta, 0);
-  const [resultSize, start] = varint(delta, afterBase);
-  if (baseSize !== base.length)
-    throw new CorruptObject("delta base size mismatch");
-  const out = Buffer.allocUnsafe(resultSize);
-  let written = 0;
-  let pos = start;
-  while (pos < delta.length) {
-    const op = delta[pos++]!;
-    if (op & 0x80) {
-      let offset = 0;
-      let size = 0;
-      for (let bit = 0; bit < 4; bit++)
-        if (op & (1 << bit)) offset += delta[pos++]! * 2 ** (8 * bit);
-      for (let bit = 0; bit < 3; bit++)
-        if (op & (0x10 << bit)) size += delta[pos++]! << (8 * bit);
-      if (size === 0) size = 0x10000;
-      if (offset + size > base.length || written + size > resultSize)
-        throw new CorruptObject("delta copy out of range");
-      base.copy(out, written, offset, offset + size);
-      written += size;
-    } else if (op > 0) {
-      if (pos + op > delta.length || written + op > resultSize)
-        throw new CorruptObject("delta insert out of range");
-      delta.copy(out, written, pos, pos + op);
-      written += op;
-      pos += op;
-    } else {
-      throw new CorruptObject("delta opcode 0");
-    }
-  }
-  if (written !== resultSize)
-    throw new CorruptObject("delta result size mismatch");
-  return out;
+  /** The delta's zlib stream exactly as it appeared in the pack. */
+  compressed: Buffer;
 }
 
 /**
@@ -203,7 +156,12 @@ export async function ingestPack(
         await keep(oid, type, data, pack.subarray(pos, next));
         resolved.set(offset, oid);
       } else if (base) {
-        pending.push({ offset, base, delta: data });
+        pending.push({
+          offset,
+          base,
+          delta: data,
+          compressed: pack.subarray(pos, next),
+        });
       } else {
         throw new CorruptObject(`invalid object type ${code} at ${offset}`);
       }
@@ -219,7 +177,7 @@ export async function ingestPack(
         const baseOid =
           "offset" in entry.base
             ? resolved.get(entry.base.offset)
-            : (await store.has(entry.base.oid))
+            : batch.has(entry.base.oid) || (await store.has(entry.base.oid))
               ? entry.base.oid
               : undefined;
         if (!baseOid) {
@@ -229,7 +187,14 @@ export async function ingestPack(
         const base = await cache.get(baseOid);
         const content = applyDelta(base.content, entry.delta);
         const oid = hashObject(base.type, content);
-        await keep(oid, base.type, content, deflateSync(content));
+        if (batch.depthOf(baseOid) < MAX_DELTA_DEPTH) {
+          const stored = await batch.putDelta(oid, base.type, content, {
+            base: baseOid,
+            zdata: entry.compressed,
+            size: entry.delta.length,
+          });
+          if (stored) added.add(oid);
+        } else await keep(oid, base.type, content, deflateSync(content));
         cache.add(oid, { type: base.type, content });
         resolved.set(entry.offset, oid);
         pending[i] = pending[pending.length - 1]!;
@@ -246,9 +211,9 @@ export async function ingestPack(
   }
 }
 
-function entryHeader(type: ObjectType, size: number): Buffer {
+function entryHeader(code: number, size: number): Buffer {
   const bytes: number[] = [];
-  let byte = (TYPE_CODE[type] << 4) | (size & 0x0f);
+  let byte = (code << 4) | (size & 0x0f);
   let rest = Math.floor(size / 16);
   while (rest > 0) {
     bytes.push(byte | 0x80);
@@ -274,6 +239,7 @@ export async function* writePack(
   header.writeUInt32BE(2, 4);
   header.writeUInt32BE(oids.length, 8);
   yield emit(header);
+  const wanted = new Set(oids);
   // Objects are read a window at a time, and the next window loads while this one is written.
   const windows: string[][] = [];
   for (let start = 0, bytes = 0, i = 0; i <= oids.length; i++) {
@@ -293,8 +259,19 @@ export async function* writePack(
     for (const oid of windows[w]!) {
       const info = store.info(oid);
       if (!info) throw new CorruptObject(`missing object ${oid}`);
-      yield emit(entryHeader(info.type, info.size));
-      yield emit(data.get(oid)!);
+      if (info.base && wanted.has(info.base)) {
+        yield emit(entryHeader(REF_DELTA, info.deltaSize));
+        yield emit(Buffer.from(info.base, "hex"));
+        yield emit(data.get(oid)!);
+      } else if (info.base) {
+        const whole = await store.read(oid);
+        if (!whole) throw new CorruptObject(`missing object ${oid}`);
+        yield emit(entryHeader(TYPE_CODE[whole.type], whole.content.length));
+        yield emit(deflateSync(whole.content));
+      } else {
+        yield emit(entryHeader(TYPE_CODE[info.type], info.size));
+        yield emit(data.get(oid)!);
+      }
     }
   }
   yield hash.digest();

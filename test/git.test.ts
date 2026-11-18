@@ -4,10 +4,13 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Subprocess, spawn, spawnSync } from "bun";
@@ -673,6 +676,47 @@ describe("smart HTTP Git on a Durable Object", () => {
     const copy = clone("concurrent-pushes");
     expect([firstHead, secondHead]).toContain(ok(copy, "rev-parse", "HEAD"));
     ok(copy, "fsck", "--full", "--strict");
+  });
+
+  test("a clone receives stored deltas as deltas and its pack passes fsck", async () => {
+    expect((await createRepo("fixture-deltas")).status).toBe(201);
+    const src = newRepo("fixture-deltas");
+    const lines = Array.from(
+      { length: 4000 },
+      (_, i) => `line ${i} ${"lorem ipsum ".repeat(4)}`,
+    );
+    commit(src, "big.txt", `${lines.join("\n")}\n`);
+    ok(src, "push", "-q", "origin", "main");
+    for (let round = 0; round < 6; round++) {
+      lines[round * 500] = `changed in round ${round}`;
+      commit(src, "big.txt", `${lines.join("\n")}\n`, `round ${round}`);
+      ok(src, "push", "-q", "origin", "main");
+    }
+    const copy = clone("fixture-deltas", "-c", "transfer.unpackLimit=1");
+    ok(copy, "fsck", "--strict");
+    expect(ok(copy, "rev-parse", "HEAD")).toBe(ok(src, "rev-parse", "HEAD"));
+    const packs = readdirSync(join(copy, ".git/objects/pack")).filter((name) =>
+      name.endsWith(".idx"),
+    );
+    expect(packs.length).toBe(1);
+    const listing = ok(
+      copy,
+      "verify-pack",
+      "-v",
+      join(copy, ".git/objects/pack", packs[0]!),
+    );
+    const deltas = listing
+      .split("\n")
+      .filter((line) =>
+        /^[0-9a-f]{40} \w+ +\d+ \d+ \d+ +\d+ [0-9a-f]{40}$/.test(line),
+      );
+    expect(deltas.length).toBeGreaterThanOrEqual(4);
+    const packSize = statSync(
+      join(copy, ".git/objects/pack", packs[0]!.replace(".idx", ".pack")),
+    ).size;
+    const wholeSize =
+      7 * deflateSync(Buffer.from(`${lines.join("\n")}\n`)).length;
+    expect(packSize).toBeLessThan(wholeSize / 2);
   });
 
   test("large binary objects split across storage rows", () => {
