@@ -2,6 +2,8 @@ import { Buffer } from "node:buffer";
 
 /** R2 multipart parts must be at least 5 MiB and all the same size except the last. */
 export const UPLOAD_PART_BYTES = 8 << 20;
+/** Parts in flight at once, so reading the request body does not stop while a part uploads. */
+const PARALLEL_PARTS = 3;
 
 /**
  * Writes a payload of unknown length to R2 without holding it in memory. Payloads smaller than one
@@ -12,6 +14,8 @@ export class BundleUpload {
   private pending = 0;
   private upload: R2MultipartUpload | undefined;
   private readonly uploaded: R2UploadedPart[] = [];
+  private inflight: Promise<R2UploadedPart>[] = [];
+  private partCount = 0;
   length = 0;
 
   constructor(
@@ -32,14 +36,16 @@ export class BundleUpload {
     const size = final ? all.length : UPLOAD_PART_BYTES;
     const rest = all.subarray(size);
     this.upload ??= await this.bucket.createMultipartUpload(this.key);
-    this.uploaded.push(
-      await this.upload.uploadPart(
-        this.uploaded.length + 1,
-        all.subarray(0, size),
-      ),
+    const upload = this.upload.uploadPart(
+      ++this.partCount,
+      all.subarray(0, size),
     );
+    upload.catch(() => {});
+    this.inflight.push(upload);
     this.parts = rest.length > 0 ? [rest] : [];
     this.pending = rest.length;
+    if (this.inflight.length >= PARALLEL_PARTS)
+      this.uploaded.push(await this.inflight.shift()!);
   }
 
   async finish(): Promise<
@@ -47,6 +53,8 @@ export class BundleUpload {
   > {
     if (!this.upload) return { inline: Buffer.concat(this.parts) };
     if (this.pending > 0) await this.sendPart(true);
+    while (this.inflight.length > 0)
+      this.uploaded.push(await this.inflight.shift()!);
     await this.upload.complete(this.uploaded);
     return { key: this.key, length: this.length };
   }
@@ -54,6 +62,8 @@ export class BundleUpload {
   async abort(): Promise<void> {
     this.parts = [];
     this.pending = 0;
+    await Promise.allSettled(this.inflight);
+    this.inflight = [];
     try {
       await this.upload?.abort();
     } catch {
