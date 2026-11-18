@@ -106,6 +106,41 @@ export async function deleteRepoObjects(
   } while (cursor);
 }
 
+/** Objects of one push are stored back to back in a single R2 object so a clone costs a few requests. */
+const BUNDLE_BYTES = 8 << 20;
+/** Two wanted objects this close together in a bundle are fetched with one range request. */
+const RANGE_GAP = 64 << 10;
+const FETCH_CONCURRENCY = 16;
+const REPACK_ROWS = 2000;
+
+interface Staged {
+  oid: string;
+  type: number;
+  size: number;
+  links: string;
+  zdata: Uint8Array;
+}
+
+interface Placement extends Record<string, SqlStorageValue> {
+  in_r2: number;
+  bundle: string | null;
+  off: number | null;
+  len: number | null;
+}
+
+async function pool<T>(
+  items: T[],
+  limit: number,
+  work: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) await work(items[next++]!);
+    }),
+  );
+}
+
 const READ_CACHE_BYTES = 4 * 1024 * 1024;
 const READ_CACHE_ENTRY_BYTES = 256 * 1024;
 const READ_CACHE_ENTRY_OVERHEAD = 512;
@@ -120,10 +155,12 @@ export class ObjectStore {
     Promise<{ type: ObjectType; content: Buffer } | null>
   >();
   private readCacheBytes = 0;
+  private readonly verifiedBundles = new Set<string>();
 
   clearReadCache(): void {
     this.readCache.clear();
     this.readCacheBytes = 0;
+    this.verifiedBundles.clear();
   }
 
   constructor(
@@ -151,6 +188,13 @@ export class ObjectStore {
       sql.exec(
         "ALTER TABLE objects ADD COLUMN in_r2 INTEGER NOT NULL DEFAULT 0",
       );
+    for (const [name, type] of [
+      ["bundle", "TEXT"],
+      ["off", "INTEGER"],
+      ["len", "INTEGER"],
+    ] as const)
+      if (!columns.some((column) => column.name === name))
+        sql.exec(`ALTER TABLE objects ADD COLUMN ${name} ${type}`);
     sql.exec(
       `CREATE TABLE IF NOT EXISTS refs (name TEXT PRIMARY KEY, oid TEXT NOT NULL) WITHOUT ROWID`,
     );
@@ -158,23 +202,23 @@ export class ObjectStore {
 
   async auditR2(after: string) {
     const rows = this.sql
-      .exec<{ oid: string; type: number }>(
-        "SELECT oid, type FROM objects WHERE oid > ? ORDER BY oid LIMIT 20",
+      .exec<{ oid: string; type: number } & Placement>(
+        "SELECT oid, type, in_r2, bundle, off, len FROM objects WHERE oid > ? ORDER BY oid LIMIT 20",
         after,
       )
       .toArray();
     const results: { oid: string; status: "valid" | "missing" | "corrupt" }[] =
       [];
     for (const row of rows) {
-      const object = await this.bucket.get(this.key(row.oid));
-      if (!object) {
+      const data = await this.payload(row.oid, row);
+      if (!data) {
         results.push({ oid: row.oid, status: "missing" });
         continue;
       }
       try {
         const type = typeFromCode(row.type);
         if (!type) throw new CorruptObject("invalid type");
-        this.verify(row.oid, type, Buffer.from(await object.arrayBuffer()));
+        this.verify(row.oid, type, data);
         results.push({ oid: row.oid, status: "valid" });
       } catch {
         results.push({ oid: row.oid, status: "corrupt" });
@@ -188,10 +232,18 @@ export class ObjectStore {
 
   async has(oid: string): Promise<boolean> {
     const row = this.sql
-      .exec<{ in_r2: number }>("SELECT in_r2 FROM objects WHERE oid = ?", oid)
+      .exec<Placement>(
+        "SELECT in_r2, bundle, off, len FROM objects WHERE oid = ?",
+        oid,
+      )
       .toArray()[0];
     if (!row) return false;
-    return !row.in_r2 || (await this.bucket.head(this.key(oid))) !== null;
+    if (!row.in_r2) return true;
+    if (!row.bundle) return (await this.bucket.head(this.key(oid))) !== null;
+    if (this.verifiedBundles.has(row.bundle)) return true;
+    if ((await this.bucket.head(row.bundle)) === null) return false;
+    this.verifiedBundles.add(row.bundle);
+    return true;
   }
 
   info(oid: string): ObjectInfo | null {
@@ -216,17 +268,16 @@ export class ObjectStore {
   /** Reads legacy SQLite payloads and migrates them only after verifying the R2 copy. */
   async zdata(oid: string): Promise<Buffer> {
     const row = this.sql
-      .exec<{ zdata: ArrayBuffer | null; in_r2: number }>(
-        "SELECT zdata, in_r2 FROM objects WHERE oid = ?",
+      .exec<{ zdata: ArrayBuffer | null } & Placement>(
+        "SELECT zdata, in_r2, bundle, off, len FROM objects WHERE oid = ?",
         oid,
       )
       .toArray()[0];
     if (!row) throw new CorruptObject(`missing object ${oid}`);
     const info = this.info(oid)!;
     if (row.in_r2) {
-      const object = await this.bucket.get(this.key(oid));
-      if (!object) throw new CorruptObject(`missing R2 object ${oid}`);
-      const data = Buffer.from(await object.arrayBuffer());
+      const data = await this.payload(oid, row);
+      if (!data) throw new CorruptObject(`missing R2 object ${oid}`);
       this.verify(oid, info.type, data);
       return data;
     }
@@ -248,6 +299,89 @@ export class ObjectStore {
     this.verify(oid, info.type, Buffer.from(await copy.arrayBuffer()));
     this.sql.exec("UPDATE objects SET in_r2 = 1 WHERE oid = ?", oid);
     return data;
+  }
+
+  /** The stored bytes of an R2-backed object, or null when R2 no longer has them. */
+  private async payload(oid: string, row: Placement): Promise<Buffer | null> {
+    const object = row.bundle
+      ? await this.bucket.get(row.bundle, {
+          range: { offset: row.off!, length: row.len! },
+        })
+      : await this.bucket.get(this.key(oid));
+    return object ? Buffer.from(await object.arrayBuffer()) : null;
+  }
+
+  /**
+   * Reads many objects at once. Objects that share a bundle and sit close together come back from
+   * one range request, so the cost is a few round trips instead of one per object.
+   */
+  async zdataBatch(oids: string[]): Promise<Map<string, Buffer>> {
+    const out = new Map<string, Buffer>();
+    const byBundle = new Map<
+      string,
+      { oid: string; off: number; len: number }[]
+    >();
+    const single: string[] = [];
+    for (const oid of oids) {
+      const row = this.sql
+        .exec<Placement>(
+          "SELECT in_r2, bundle, off, len FROM objects WHERE oid = ?",
+          oid,
+        )
+        .toArray()[0];
+      if (row?.in_r2 && row.bundle) {
+        const items = byBundle.get(row.bundle) ?? [];
+        items.push({ oid, off: row.off!, len: row.len! });
+        byBundle.set(row.bundle, items);
+      } else single.push(oid);
+    }
+    const reads: (() => Promise<void>)[] = [];
+    for (const [bundle, items] of byBundle) {
+      items.sort((a, b) => a.off - b.off);
+      let group = [items[0]!];
+      const close = () => {
+        const members = group;
+        reads.push(() => this.readRange(bundle, members, out));
+      };
+      for (const item of items.slice(1)) {
+        const last = group[group.length - 1]!;
+        if (
+          item.off - (last.off + last.len) > RANGE_GAP ||
+          item.off + item.len - group[0]!.off > BUNDLE_BYTES
+        ) {
+          close();
+          group = [];
+        }
+        group.push(item);
+      }
+      close();
+    }
+    for (const oid of single)
+      reads.push(async () => void out.set(oid, await this.zdata(oid)));
+    await pool(reads, FETCH_CONCURRENCY, (read) => read());
+    return out;
+  }
+
+  private async readRange(
+    bundle: string,
+    items: { oid: string; off: number; len: number }[],
+    out: Map<string, Buffer>,
+  ): Promise<void> {
+    const start = items[0]!.off;
+    const last = items[items.length - 1]!;
+    const object = await this.bucket.get(bundle, {
+      range: { offset: start, length: last.off + last.len - start },
+    });
+    if (!object) throw new CorruptObject(`missing R2 bundle ${bundle}`);
+    const bytes = Buffer.from(await object.arrayBuffer());
+    for (const item of items) {
+      const data = bytes.subarray(
+        item.off - start,
+        item.off - start + item.len,
+      );
+      this.verify(item.oid, this.info(item.oid)!.type, data);
+      out.set(item.oid, data);
+    }
   }
 
   private verify(oid: string, type: ObjectType, data: Uint8Array): void {
@@ -310,26 +444,113 @@ export class ObjectStore {
     }
   }
 
-  async put(
-    oid: string,
-    type: ObjectType,
-    content: Buffer,
-    zdata: Uint8Array,
-  ): Promise<boolean> {
-    if (hashObject(type, content) !== oid)
-      throw new CorruptObject(`object hash mismatch ${oid}`);
-    this.verify(oid, type, zdata);
-    if (await this.has(oid)) return false;
-    const links = parseLinks(type, content).join(" ");
-    await this.bucket.put(this.key(oid), zdata);
-    this.sql.exec(
-      "INSERT OR IGNORE INTO objects (oid, type, size, links, zdata, in_r2) VALUES (?, ?, ?, ?, NULL, 1)",
-      oid,
-      TYPE_CODE[type],
-      content.length,
-      links,
-    );
-    return true;
+  /**
+   * Collects the objects of one push and writes them as a single R2 bundle. Nothing is visible to
+   * readers until flush() has stored the bundle, so a failed upload leaves no metadata behind.
+   */
+  batch() {
+    const staged = new Map<string, Staged>();
+    let bytes = 0;
+    const flush = async () => {
+      if (staged.size === 0) return;
+      await this.commit([...staged.values()]);
+      staged.clear();
+      bytes = 0;
+    };
+    return {
+      put: async (
+        oid: string,
+        type: ObjectType,
+        content: Buffer,
+        zdata: Uint8Array,
+      ): Promise<boolean> => {
+        if (hashObject(type, content) !== oid)
+          throw new CorruptObject(`object hash mismatch ${oid}`);
+        this.verify(oid, type, zdata);
+        if (staged.has(oid) || (await this.has(oid))) return false;
+        staged.set(oid, {
+          oid,
+          type: TYPE_CODE[type],
+          size: content.length,
+          links: parseLinks(type, content).join(" "),
+          zdata,
+        });
+        bytes += zdata.length;
+        if (bytes >= BUNDLE_BYTES) await flush();
+        return true;
+      },
+      flush,
+      discard: () => {
+        staged.clear();
+        bytes = 0;
+      },
+    };
+  }
+
+  private async commit(items: Staged[]): Promise<void> {
+    const bundle = Buffer.concat(items.map((item) => item.zdata));
+    const key = `${this.repoId}/pack-${createHash("sha1").update(bundle).digest("hex")}`;
+    await this.bucket.put(key, bundle);
+    this.verifiedBundles.add(key);
+    let off = 0;
+    for (const item of items) {
+      this.sql.exec(
+        `INSERT INTO objects (oid, type, size, links, zdata, in_r2, bundle, off, len)
+         VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?)
+         ON CONFLICT (oid) DO UPDATE SET in_r2 = 1, bundle = excluded.bundle, off = excluded.off, len = excluded.len`,
+        item.oid,
+        item.type,
+        item.size,
+        item.links,
+        key,
+        off,
+        item.zdata.length,
+      );
+      off += item.zdata.length;
+    }
+  }
+
+  /**
+   * Moves objects stored as one R2 object each into bundles. Each call handles a bounded slice and
+   * returns how many rows are left, so callers loop until it reaches zero. Rows switch to the
+   * bundle before the old keys are deleted, so an interrupted run never loses an object.
+   */
+  async repack(): Promise<{ moved: number; remaining: number }> {
+    const rows = this.sql
+      .exec<{ oid: string; type: number; size: number }>(
+        "SELECT oid, type, size FROM objects WHERE in_r2 = 1 AND bundle IS NULL ORDER BY oid LIMIT ?",
+        REPACK_ROWS,
+      )
+      .toArray();
+    const slice: typeof rows = [];
+    let uncompressed = 0;
+    for (const row of rows) {
+      if (slice.length > 0 && uncompressed + row.size > BUNDLE_BYTES) break;
+      slice.push(row);
+      uncompressed += row.size;
+    }
+    if (slice.length > 0) {
+      const data = await this.zdataBatch(slice.map((row) => row.oid));
+      await this.commit(
+        slice.map((row) => ({
+          oid: row.oid,
+          type: row.type,
+          size: row.size,
+          links: "",
+          zdata: data.get(row.oid)!,
+        })),
+      );
+      for (let i = 0; i < slice.length; i += 1000)
+        await this.bucket.delete(
+          slice.slice(i, i + 1000).map((row) => this.key(row.oid)),
+        );
+    }
+    const remaining = this.sql
+      .exec<{ count: number }>(
+        "SELECT count(*) AS count FROM objects WHERE in_r2 = 1 AND bundle IS NULL",
+      )
+      .one().count;
+    return { moved: slice.length, remaining };
   }
 
   refs(): Map<string, string> {

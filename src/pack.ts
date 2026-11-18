@@ -12,7 +12,7 @@ import {
 
 const OFS_DELTA = 6;
 const REF_DELTA = 7;
-const PREFETCH_OBJECTS = 16;
+const WINDOW_BYTES = 8 << 20;
 
 interface PendingDelta {
   offset: number;
@@ -109,12 +109,14 @@ class BaseCache {
   private bytes = 0;
   constructor(
     private readonly store: ObjectStore,
+    private readonly beforeStoreRead: () => Promise<void>,
     private readonly limit = 32 << 20,
   ) {}
 
   async get(oid: string): Promise<{ type: ObjectType; content: Buffer }> {
     const hit = this.entries.get(oid);
     if (hit) return hit;
+    await this.beforeStoreRead();
     const object = await this.store.read(oid);
     if (!object) throw new CorruptObject(`missing delta base ${oid}`);
     this.add(oid, object);
@@ -155,87 +157,93 @@ export async function ingestPack(
 
   const resolved = new Map<number, string>();
   const pending: PendingDelta[] = [];
-  const cache = new BaseCache(store);
+  const batch = store.batch();
+  const cache = new BaseCache(store, batch.flush);
   const keep = async (
     oid: string,
     type: ObjectType,
     content: Buffer,
     zdata: Uint8Array,
   ) => {
-    if (await store.put(oid, type, content, zdata)) added.add(oid);
+    if (await batch.put(oid, type, content, zdata)) added.add(oid);
   };
-
-  let pos = 12;
-  for (let i = 0; i < count; i++) {
-    const offset = pos;
-    if (pos >= end) throw new CorruptObject("pack truncated");
-    let byte = pack[pos++]!;
-    const code = (byte >> 4) & 7;
-    let size = byte & 0x0f;
-    let shift = 4;
-    while (byte & 0x80) {
-      byte = pack[pos++]!;
-      size += (byte & 0x7f) * 2 ** shift;
-      shift += 7;
-    }
-    let base: PendingDelta["base"] | undefined;
-    if (code === OFS_DELTA) {
-      byte = pack[pos++]!;
-      let distance = byte & 0x7f;
+  try {
+    let pos = 12;
+    for (let i = 0; i < count; i++) {
+      const offset = pos;
+      if (pos >= end) throw new CorruptObject("pack truncated");
+      let byte = pack[pos++]!;
+      const code = (byte >> 4) & 7;
+      let size = byte & 0x0f;
+      let shift = 4;
       while (byte & 0x80) {
         byte = pack[pos++]!;
-        distance = (distance + 1) * 128 + (byte & 0x7f);
+        size += (byte & 0x7f) * 2 ** shift;
+        shift += 7;
       }
-      base = { offset: offset - distance };
-    } else if (code === REF_DELTA) {
-      base = { oid: pack.toString("hex", pos, pos + 20) };
-      pos += 20;
+      let base: PendingDelta["base"] | undefined;
+      if (code === OFS_DELTA) {
+        byte = pack[pos++]!;
+        let distance = byte & 0x7f;
+        while (byte & 0x80) {
+          byte = pack[pos++]!;
+          distance = (distance + 1) * 128 + (byte & 0x7f);
+        }
+        base = { offset: offset - distance };
+      } else if (code === REF_DELTA) {
+        base = { oid: pack.toString("hex", pos, pos + 20) };
+        pos += 20;
+      }
+      const { data, next } = inflateAt(pack, pos, end, size);
+      if (data.length !== size)
+        throw new CorruptObject(`object at ${offset} has wrong size`);
+      const type = typeFromCode(code);
+      if (type) {
+        const oid = hashObject(type, data);
+        await keep(oid, type, data, pack.subarray(pos, next));
+        resolved.set(offset, oid);
+      } else if (base) {
+        pending.push({ offset, base, delta: data });
+      } else {
+        throw new CorruptObject(`invalid object type ${code} at ${offset}`);
+      }
+      pos = next;
     }
-    const { data, next } = inflateAt(pack, pos, end, size);
-    if (data.length !== size)
-      throw new CorruptObject(`object at ${offset} has wrong size`);
-    const type = typeFromCode(code);
-    if (type) {
-      const oid = hashObject(type, data);
-      await keep(oid, type, data, pack.subarray(pos, next));
-      resolved.set(offset, oid);
-    } else if (base) {
-      pending.push({ offset, base, delta: data });
-    } else {
-      throw new CorruptObject(`invalid object type ${code} at ${offset}`);
-    }
-    pos = next;
-  }
-  if (pos !== end) throw new CorruptObject("pack has trailing data");
+    if (pos !== end) throw new CorruptObject("pack has trailing data");
 
-  for (let progress = true; pending.length > 0 && progress;) {
-    progress = false;
-    for (let i = 0; i < pending.length;) {
-      const entry = pending[i]!;
-      const baseOid =
-        "offset" in entry.base
-          ? resolved.get(entry.base.offset)
-          : (await store.has(entry.base.oid))
-            ? entry.base.oid
-            : undefined;
-      if (!baseOid) {
-        i++;
-        continue;
+    await batch.flush();
+    for (let progress = true; pending.length > 0 && progress;) {
+      progress = false;
+      for (let i = 0; i < pending.length;) {
+        const entry = pending[i]!;
+        const baseOid =
+          "offset" in entry.base
+            ? resolved.get(entry.base.offset)
+            : (await store.has(entry.base.oid))
+              ? entry.base.oid
+              : undefined;
+        if (!baseOid) {
+          i++;
+          continue;
+        }
+        const base = await cache.get(baseOid);
+        const content = applyDelta(base.content, entry.delta);
+        const oid = hashObject(base.type, content);
+        await keep(oid, base.type, content, deflateSync(content));
+        cache.add(oid, { type: base.type, content });
+        resolved.set(entry.offset, oid);
+        pending[i] = pending[pending.length - 1]!;
+        pending.pop();
+        progress = true;
       }
-      const base = await cache.get(baseOid);
-      const content = applyDelta(base.content, entry.delta);
-      const oid = hashObject(base.type, content);
-      await keep(oid, base.type, content, deflateSync(content));
-      cache.add(oid, { type: base.type, content });
-      resolved.set(entry.offset, oid);
-      pending[i] = pending[pending.length - 1]!;
-      pending.pop();
-      progress = true;
     }
+    if (pending.length > 0)
+      throw new CorruptObject(`${pending.length} unresolved deltas`);
+    await batch.flush();
+    return added;
+  } finally {
+    batch.discard();
   }
-  if (pending.length > 0)
-    throw new CorruptObject(`${pending.length} unresolved deltas`);
-  return added;
 }
 
 function entryHeader(type: ObjectType, size: number): Buffer {
@@ -266,23 +274,28 @@ export async function* writePack(
   header.writeUInt32BE(2, 4);
   header.writeUInt32BE(oids.length, 8);
   yield emit(header);
-  // Each zdata() is an R2 round trip, so reading one object at a time makes a clone cost one
-  // round trip per object. Keep a window of reads in flight and consume them in order.
-  const inflight: Promise<Buffer>[] = [];
-  let next = 0;
-  const prefetch = () => {
-    while (next < oids.length && inflight.length < PREFETCH_OBJECTS) {
-      const read = store.zdata(oids[next++]!);
-      read.catch(() => {});
-      inflight.push(read);
+  // Objects are read a window at a time, and the next window loads while this one is written.
+  const windows: string[][] = [];
+  for (let start = 0, bytes = 0, i = 0; i <= oids.length; i++) {
+    const size = i < oids.length ? (store.info(oids[i]!)?.size ?? 0) : 0;
+    if (i === oids.length || (i > start && bytes + size > WINDOW_BYTES)) {
+      if (i > start) windows.push(oids.slice(start, i));
+      start = i;
+      bytes = 0;
     }
-  };
-  for (const oid of oids) {
-    const info = store.info(oid);
-    if (!info) throw new CorruptObject(`missing object ${oid}`);
-    prefetch();
-    yield emit(entryHeader(info.type, info.size));
-    yield emit(await inflight.shift()!);
+    bytes += size;
+  }
+  let loading = windows[0] ? store.zdataBatch(windows[0]) : undefined;
+  for (let w = 0; w < windows.length; w++) {
+    const data = await loading!;
+    loading = windows[w + 1] ? store.zdataBatch(windows[w + 1]!) : undefined;
+    loading?.catch(() => {});
+    for (const oid of windows[w]!) {
+      const info = store.info(oid);
+      if (!info) throw new CorruptObject(`missing object ${oid}`);
+      yield emit(entryHeader(info.type, info.size));
+      yield emit(data.get(oid)!);
+    }
   }
   yield hash.digest();
 }

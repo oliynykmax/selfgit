@@ -292,6 +292,24 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect(audit.r2Count).toBeGreaterThanOrEqual(0);
   });
 
+  test("repack is owner-only, names an existing repository, and is a no-op once objects are bundled", async () => {
+    const path = `${base}/api/maintenance/repack-repo/repack`;
+    expect((await fetch(path, { method: "POST" })).status).toBe(403);
+    const headers = { Authorization: `Bearer ${TOKEN}` };
+    expect((await createRepo("repack-repo", headers)).status).toBe(201);
+    expect(
+      (
+        await fetch(`${base}/api/maintenance/no-such-repo/repack`, {
+          method: "POST",
+          headers,
+        })
+      ).status,
+    ).toBe(404);
+    const response = await fetch(path, { method: "POST", headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ moved: 0, remaining: 0 });
+  });
+
   test("management API accepts the owner's GitHub bearer token without a browser session", async () => {
     expect(
       (await createRepo("bearer-repo", { Authorization: `Bearer ${TOKEN}` }))

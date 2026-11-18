@@ -95,6 +95,10 @@ export class Repository extends DurableObject<Env> {
     return this.serialize(() => this.store.auditR2(after));
   }
 
+  async maintenanceRepack() {
+    return this.serialize(() => this.store.repack());
+  }
+
   async maintenanceAudit() {
     return this.serialize(async () => {
       const sql = this.ctx.storage.sql;
