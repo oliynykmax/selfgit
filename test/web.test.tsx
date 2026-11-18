@@ -1,6 +1,12 @@
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import globalJsdom from "global-jsdom";
 
+const nativeGlobals = {
+  fetch: globalThis.fetch,
+  Event: globalThis.Event,
+  AbortController: globalThis.AbortController,
+  AbortSignal: globalThis.AbortSignal,
+};
 const restoreGlobals = globalJsdom(undefined, {
   url: "https://git.example/course-work",
   pretendToBeVisual: true,
@@ -42,7 +48,10 @@ let approve = false;
 const agent = createAgent({ allow: (step) => !step.confirm || approve });
 
 afterEach(cleanup);
-afterAll(() => restoreGlobals());
+afterAll(() => {
+  restoreGlobals();
+  Object.assign(globalThis, nativeGlobals);
+});
 
 const commit = {
   oid: "a".repeat(40),
