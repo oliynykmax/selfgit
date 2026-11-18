@@ -154,7 +154,10 @@ beforeAll(async () => {
     .find((cookie) => cookie.startsWith("__Host-selfgit-oauth="))
     ?.split(";")[0];
   const location = login.headers.get("Location");
-  if (!flow || !location) throw new Error("OAuth login did not start");
+  if (!flow || !location)
+    throw new Error(
+      `OAuth login did not start: ${login.status} ${(await login.text()).slice(0, 300)}`,
+    );
   const state = new URL(location).searchParams.get("state");
   const callback = await fetch(
     `${base}/auth/github/callback?${new URLSearchParams({ state: state ?? "", code: "test-code" })}`,
