@@ -466,3 +466,35 @@ test("delta chains stop at the depth limit and the next version is stored whole"
   expect(depths).toEqual([0, 1, 2, 3, 4, 0, 1]);
   expect((await store.read(oids[oids.length - 1]!))?.content).toEqual(content);
 });
+
+test("a pack whose deltas use bases from the same pack is written with one R2 request and no reads", async () => {
+  const { ingestPack } = await import("../src/pack");
+  const { calls, store } = setup();
+  const base = Buffer.from(
+    Array.from({ length: 300 }, (_, i) => `line ${i}\n`).join(""),
+  );
+  const baseOid = hashObject("blob", base);
+  const entries = [
+    packEntry(3, base.length, Buffer.alloc(0), deflateSync(base)),
+  ];
+  let content = base;
+  let previous = baseOid;
+  for (let i = 0; i < 3; i++) {
+    const delta = appendDelta(content, `step ${i}\n`);
+    entries.push(
+      packEntry(
+        7,
+        delta.length,
+        Buffer.from(previous, "hex"),
+        deflateSync(delta),
+      ),
+    );
+    content = Buffer.concat([content, Buffer.from(`step ${i}\n`)]);
+    previous = hashObject("blob", content);
+  }
+  const added = await ingestPack(store, await packOf(entries));
+  expect(added.size).toBe(4);
+  expect(calls.put).toBe(1);
+  expect(calls.get).toBe(0);
+  expect((await store.read(previous))?.content).toEqual(content);
+});

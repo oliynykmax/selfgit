@@ -154,6 +154,7 @@ export async function ingestPack(
       if (type) {
         const oid = hashObject(type, data);
         await keep(oid, type, data, pack.subarray(pos, next));
+        cache.add(oid, { type, content: data });
         resolved.set(offset, oid);
       } else if (base) {
         pending.push({
@@ -169,7 +170,6 @@ export async function ingestPack(
     }
     if (pos !== end) throw new CorruptObject("pack has trailing data");
 
-    await batch.flush();
     for (let progress = true; pending.length > 0 && progress;) {
       progress = false;
       for (let i = 0; i < pending.length;) {
