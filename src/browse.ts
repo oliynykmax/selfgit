@@ -33,6 +33,7 @@ const DIFF_LINES = 20_000;
 const HISTORY_LIMIT = 2_000;
 
 const IMAGE_TYPES: Record<string, string> = {
+  svg: "image/svg+xml",
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",

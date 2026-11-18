@@ -11,16 +11,6 @@
   <a href="https://bun.com"><img alt="Built with Bun" src="https://img.shields.io/badge/built%20with-Bun-000?style=flat-square&logo=bun"></a>
 </p>
 
-<p align="center">
-  <a href="https://git.oliinyk.dev/selfgit">
-    <picture>
-      <source srcset="docs/screenshots/dark.png" media="(prefers-color-scheme: dark)">
-      <source srcset="docs/screenshots/light.png" media="(prefers-color-scheme: light)">
-      <img src="docs/screenshots/light.png" alt="The selfgit repository page">
-    </picture>
-  </a>
-</p>
-
 ---
 
 Push course work and side projects to your own domain instead of opening yet another GitHub repo. Anyone can clone. Only you can push, signed in with the GitHub CLI you already use.
