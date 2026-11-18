@@ -172,6 +172,20 @@ export async function handleApi(context: ApiContext): Promise<Response> {
     return json(await env.REPOS.getByName(name).maintenanceAudit());
   }
 
+  if (
+    parts[0] === "maintenance" &&
+    parts.length === 3 &&
+    parts[2] === "repack" &&
+    method === "POST"
+  ) {
+    const denied = await authorizeOwner(request, auth, identity);
+    if (denied) return denied;
+    const name = parts[1]!;
+    if (!(await env.REGISTRY.getByName("registry").list()).includes(name))
+      return error(404, "Not found");
+    return json(await env.REPOS.getByName(name).maintenanceRepack());
+  }
+
   if (parts[0] === "session" && parts.length === 1 && method === "GET") {
     const user = await currentUser(request, auth);
     const session: Session = user

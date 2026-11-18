@@ -42,7 +42,9 @@ test("tree history retains last commits while avoiding repeated object reads", a
   const store = new ObjectStore(sql, bucket, "repo");
   async function put(type: ObjectType, content: Buffer) {
     const oid = hashObject(type, content);
-    await store.put(oid, type, content, deflateSync(content));
+    const batch = store.batch();
+    await batch.put(oid, type, content, deflateSync(content));
+    await batch.flush();
     return oid;
   }
   const stable = await put("blob", Buffer.from("stable"));
