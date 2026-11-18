@@ -6,7 +6,7 @@ import {
   FolderGit2,
   History,
 } from "lucide-react";
-import { type MouseEvent, useMemo } from "react";
+import { lazy, Suspense, type MouseEvent, useMemo } from "react";
 import type {
   BlobView,
   CommitPage,
@@ -19,7 +19,6 @@ import type {
 import { ClonePopover, cloneUrl } from "@/components/clone-popover";
 import { CommitRow } from "@/components/commit-row";
 import { Link } from "@/components/link";
-import { CodeFile } from "@/components/pierre";
 import { RefPicker } from "@/components/ref-picker";
 import { LoadingRows, Problem } from "@/components/states";
 import { Time } from "@/components/time";
@@ -32,6 +31,10 @@ import { apiUrl, href, splitRefPath } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
 const PANEL = "overflow-hidden rounded-lg border bg-background";
+
+const CodeFile = lazy(async () => ({
+  default: (await import("@/components/pierre")).CodeFile,
+}));
 
 function rawUrl(repo: RepoName, ref: string, path: string): string {
   return apiUrl(`repos/${repo}/raw`, { ref, path });
@@ -459,10 +462,12 @@ export function TreePage({
   if (!resolved)
     return <Problem title="Branch or tag not found" detail={rest[0]} />;
   const overview = resolved.path === "";
+  const showSidebar = overview && tree.status === "ok";
   return (
     <div
       className={cn(
-        overview && "grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]",
+        showSidebar &&
+          "grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]",
       )}
     >
       <div className="min-w-0">
@@ -503,7 +508,7 @@ export function TreePage({
           </>
         ) : null}
       </div>
-      {overview ? (
+      {showSidebar ? (
         <Sidebar repo={repo} refs={refs} gitRef={resolved.ref} />
       ) : null}
     </div>
@@ -535,11 +540,13 @@ function BlobBody({
           />
         </div>
       ) : (
-        <CodeFile
-          name={blob.path}
-          contents={blob.content.text}
-          cacheKey={blob.oid}
-        />
+        <Suspense fallback={<LoadingRows />}>
+          <CodeFile
+            name={blob.path}
+            contents={blob.content.text}
+            cacheKey={blob.oid}
+          />
+        </Suspense>
       );
     case "image":
       return (
