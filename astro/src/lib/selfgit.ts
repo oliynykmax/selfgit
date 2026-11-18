@@ -24,8 +24,8 @@ export function rawUrl(repo: string, oid: string, path: string): string {
 }
 
 export function treeUrl(repo: string, path = "", ref = "HEAD"): string {
-  const base = `/${encodeURIComponent(repo)}${path ? `/${encodePath(path)}` : ""}`;
-  return ref === "HEAD" ? base : `${base}?ref=${encodeURIComponent(ref)}`;
+  if (!path && ref === "HEAD") return `/${encodeURIComponent(repo)}`;
+  return `/${encodeURIComponent(repo)}/tree/${encodePath(ref)}${path ? `/${encodePath(path)}` : ""}`;
 }
 
 export function parentPath(path: string): string {
