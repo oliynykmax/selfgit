@@ -4,7 +4,6 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
-  "routes": [{ "pattern": "git.oliinyk.dev", "custom_domain": true }],
   "workers_dev": false,
   "vars": { "GITHUB_OWNER_ID": "85843900" },
   "secrets": {

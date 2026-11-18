@@ -9,7 +9,7 @@
     "astro:check": "astro check --root astro",
     "astro:deploy": "bun run astro:build && wrangler deploy --config astro/dist/server/wrangler.json",
     "build": "bun scripts/web.ts",
-    "deploy": "bun run build && wrangler deploy",
+    "deploy": "bun run build && wrangler deploy && bun run astro:deploy",
     "types": "wrangler types",
     "typecheck": "bun check && bun check -p web",
     "test": "bun run build && bun test --timeout 300000",
