@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
+import { applyDelta } from "./delta";
 
 export const OBJECT_TYPES = ["commit", "tree", "blob", "tag"] as const;
 export type ObjectType = (typeof OBJECT_TYPES)[number];
@@ -16,7 +17,14 @@ export class CorruptObject extends Error {}
 
 export interface ObjectInfo {
   type: ObjectType;
+  /** Size of the whole object, whether it is stored whole or as a delta. */
   size: number;
+  /** The object this one is stored as a delta against, or null when it is stored whole. */
+  base: string | null;
+  /** Inflated size of the stored delta. Only meaningful when base is set. */
+  deltaSize: number;
+  /** Length of the delta chain down to a whole object. */
+  depth: number;
   /** commit: [tree, ...parents]; tag: [target]; tree: non-gitlink entries; blob: []. */
   links: string[];
 }
@@ -90,7 +98,16 @@ interface ObjectRow extends Record<string, SqlStorageValue> {
   type: number;
   size: number;
   links: string;
+  base: string | null;
+  dsize: number | null;
+  depth: number | null;
 }
+
+/**
+ * Deltas are stored as the client sent them, and reading one costs a round trip per link of its
+ * chain, so chains stop here and the next version is stored whole.
+ */
+export const MAX_DELTA_DEPTH = 4;
 
 export async function deleteRepoObjects(
   bucket: R2Bucket,
@@ -119,6 +136,9 @@ interface Staged {
   size: number;
   links: string;
   zdata: Uint8Array;
+  base: string | null;
+  dsize: number | null;
+  depth: number;
 }
 
 interface Placement extends Record<string, SqlStorageValue> {
@@ -192,6 +212,9 @@ export class ObjectStore {
       ["bundle", "TEXT"],
       ["off", "INTEGER"],
       ["len", "INTEGER"],
+      ["base", "TEXT"],
+      ["dsize", "INTEGER"],
+      ["depth", "INTEGER"],
     ] as const)
       if (!columns.some((column) => column.name === name))
         sql.exec(`ALTER TABLE objects ADD COLUMN ${name} ${type}`);
@@ -202,14 +225,23 @@ export class ObjectStore {
 
   async auditR2(after: string) {
     const rows = this.sql
-      .exec<{ oid: string; type: number } & Placement>(
-        "SELECT oid, type, in_r2, bundle, off, len FROM objects WHERE oid > ? ORDER BY oid LIMIT 20",
+      .exec<{ oid: string; type: number; base: string | null } & Placement>(
+        "SELECT oid, type, base, in_r2, bundle, off, len FROM objects WHERE oid > ? ORDER BY oid LIMIT 20",
         after,
       )
       .toArray();
     const results: { oid: string; status: "valid" | "missing" | "corrupt" }[] =
       [];
     for (const row of rows) {
+      if (row.base) {
+        try {
+          await this.resolve(row.oid, this.info(row.oid)!);
+          results.push({ oid: row.oid, status: "valid" });
+        } catch {
+          results.push({ oid: row.oid, status: "corrupt" });
+        }
+        continue;
+      }
       const data = await this.payload(row.oid, row);
       if (!data) {
         results.push({ oid: row.oid, status: "missing" });
@@ -249,7 +281,7 @@ export class ObjectStore {
   info(oid: string): ObjectInfo | null {
     const row = this.sql
       .exec<ObjectRow>(
-        "SELECT type, size, links FROM objects WHERE oid = ?",
+        "SELECT type, size, links, base, dsize, depth FROM objects WHERE oid = ?",
         oid,
       )
       .toArray()[0];
@@ -257,6 +289,9 @@ export class ObjectStore {
     return {
       type: typeFromCode(row.type)!,
       size: row.size,
+      base: row.base,
+      deltaSize: row.dsize ?? 0,
+      depth: row.depth ?? 0,
       links: row.links ? row.links.split(" ") : [],
     };
   }
@@ -278,7 +313,7 @@ export class ObjectStore {
     if (row.in_r2) {
       const data = await this.payload(oid, row);
       if (!data) throw new CorruptObject(`missing R2 object ${oid}`);
-      this.verify(oid, info.type, data);
+      if (!info.base) this.verify(oid, info.type, data);
       return data;
     }
     const data = row.zdata
@@ -379,7 +414,8 @@ export class ObjectStore {
         item.off - start,
         item.off - start + item.len,
       );
-      this.verify(item.oid, this.info(item.oid)!.type, data);
+      const info = this.info(item.oid)!;
+      if (!info.base) this.verify(item.oid, info.type, data);
       out.set(item.oid, data);
     }
   }
@@ -393,6 +429,18 @@ export class ObjectStore {
     }
     if (hashObject(type, content) !== oid)
       throw new CorruptObject(`object hash mismatch ${oid}`);
+  }
+
+  /** The content of an object, applying its delta chain when it is stored as a delta. */
+  private async resolve(oid: string, info: ObjectInfo): Promise<Buffer> {
+    const stored = await this.zdata(oid);
+    if (!info.base) return inflateSync(stored);
+    const base = await this.read(info.base);
+    if (!base) throw new CorruptObject(`missing delta base ${info.base}`);
+    const content = applyDelta(base.content, inflateSync(stored));
+    if (hashObject(info.type, content) !== oid)
+      throw new CorruptObject(`object hash mismatch ${oid}`);
+    return content;
   }
 
   async read(
@@ -411,7 +459,7 @@ export class ObjectStore {
       if (!info) return null;
       const object = {
         type: info.type,
-        content: inflateSync(await this.zdata(oid)),
+        content: await this.resolve(oid, info),
       };
       if (
         (info.type === "commit" || info.type === "tree") &&
@@ -451,6 +499,14 @@ export class ObjectStore {
   batch() {
     const staged = new Map<string, Staged>();
     let bytes = 0;
+    const depthOf = (oid: string) =>
+      staged.get(oid)?.depth ?? this.info(oid)?.depth ?? 0;
+    const stage = async (item: Staged): Promise<boolean> => {
+      staged.set(item.oid, item);
+      bytes += item.zdata.length;
+      if (bytes >= BUNDLE_BYTES) await flush();
+      return true;
+    };
     const flush = async () => {
       if (staged.size === 0) return;
       await this.commit([...staged.values()]);
@@ -468,17 +524,39 @@ export class ObjectStore {
           throw new CorruptObject(`object hash mismatch ${oid}`);
         this.verify(oid, type, zdata);
         if (staged.has(oid) || (await this.has(oid))) return false;
-        staged.set(oid, {
+        return stage({
           oid,
           type: TYPE_CODE[type],
           size: content.length,
           links: parseLinks(type, content).join(" "),
           zdata,
+          base: null,
+          dsize: null,
+          depth: 0,
         });
-        bytes += zdata.length;
-        if (bytes >= BUNDLE_BYTES) await flush();
-        return true;
       },
+      /** Stores an object as the zlib-compressed delta a client sent, against an object already stored or staged. */
+      putDelta: async (
+        oid: string,
+        type: ObjectType,
+        content: Buffer,
+        delta: { base: string; zdata: Uint8Array; size: number },
+      ): Promise<boolean> => {
+        if (hashObject(type, content) !== oid)
+          throw new CorruptObject(`object hash mismatch ${oid}`);
+        if (staged.has(oid) || (await this.has(oid))) return false;
+        return stage({
+          oid,
+          type: TYPE_CODE[type],
+          size: content.length,
+          links: parseLinks(type, content).join(" "),
+          zdata: delta.zdata,
+          base: delta.base,
+          dsize: delta.size,
+          depth: depthOf(delta.base) + 1,
+        });
+      },
+      depthOf,
       flush,
       /** True while the object is held in memory and not yet readable from the store. */
       has: (oid: string) => staged.has(oid),
@@ -497,9 +575,10 @@ export class ObjectStore {
     let off = 0;
     for (const item of items) {
       this.sql.exec(
-        `INSERT INTO objects (oid, type, size, links, zdata, in_r2, bundle, off, len)
-         VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?)
-         ON CONFLICT (oid) DO UPDATE SET in_r2 = 1, bundle = excluded.bundle, off = excluded.off, len = excluded.len`,
+        `INSERT INTO objects (oid, type, size, links, zdata, in_r2, bundle, off, len, base, dsize, depth)
+         VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (oid) DO UPDATE SET in_r2 = 1, bundle = excluded.bundle, off = excluded.off, len = excluded.len,
+           base = excluded.base, dsize = excluded.dsize, depth = excluded.depth`,
         item.oid,
         item.type,
         item.size,
@@ -507,6 +586,9 @@ export class ObjectStore {
         key,
         off,
         item.zdata.length,
+        item.base,
+        item.dsize,
+        item.depth,
       );
       off += item.zdata.length;
     }
@@ -540,6 +622,9 @@ export class ObjectStore {
           size: row.size,
           links: "",
           zdata: data.get(row.oid)!,
+          base: null,
+          dsize: null,
+          depth: 0,
         })),
       );
       for (let i = 0; i < slice.length; i += 1000)

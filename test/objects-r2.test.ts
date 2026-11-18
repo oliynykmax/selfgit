@@ -327,3 +327,142 @@ test("a pack of deltas against stored bases is written as one bundle", async () 
   expect(added.size).toBe(bases.length);
   expect(calls.put).toBe(1);
 });
+
+function packEntry(code: number, size: number, extra: Buffer, z: Buffer) {
+  const bytes: number[] = [];
+  let byte = (code << 4) | (size & 15);
+  let rest = Math.floor(size / 16);
+  while (rest > 0) {
+    bytes.push(byte | 0x80);
+    byte = rest & 0x7f;
+    rest = Math.floor(rest / 128);
+  }
+  bytes.push(byte);
+  return Buffer.concat([Buffer.from(bytes), extra, z]);
+}
+
+function varint(value: number) {
+  const bytes: number[] = [];
+  do {
+    bytes.push((value & 0x7f) | (value > 0x7f ? 0x80 : 0));
+    value = Math.floor(value / 128);
+  } while (value > 0);
+  return Buffer.from(bytes);
+}
+
+/** A delta that copies all of base and appends `extra`. */
+function appendDelta(base: Buffer, extra: string) {
+  const tail = Buffer.from(extra);
+  return Buffer.concat([
+    varint(base.length),
+    varint(base.length + tail.length),
+    Buffer.from([0x80 | 0x10 | 0x20, base.length & 0xff, base.length >> 8]),
+    Buffer.from([tail.length]),
+    tail,
+  ]);
+}
+
+async function packOf(entries: Buffer[]) {
+  const { createHash } = await import("node:crypto");
+  const head = Buffer.alloc(12);
+  head.write("PACK");
+  head.writeUInt32BE(2, 4);
+  head.writeUInt32BE(entries.length, 8);
+  const body = Buffer.concat([head, ...entries]);
+  return Buffer.concat([body, createHash("sha1").update(body).digest()]);
+}
+
+async function collect(stream: AsyncGenerator<Buffer>) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+function indexPack(pack: Buffer) {
+  const dir = require("node:fs").mkdtempSync(
+    require("node:path").join(require("node:os").tmpdir(), "selfgit-pack-"),
+  );
+  Bun.spawnSync(["git", "init", "-q", dir]);
+  return Bun.spawnSync(["git", "-C", dir, "index-pack", "--stdin"], {
+    stdin: pack,
+  });
+}
+
+test("deltas are stored as sent, shipped as deltas with their base, and read back whole", async () => {
+  const { ingestPack, writePack } = await import("../src/pack");
+  const { db, store } = setup();
+  const base = Buffer.from(
+    Array.from({ length: 300 }, (_, i) => `line ${i}\n`).join(""),
+  );
+  const baseOid = hashObject("blob", base);
+  const seed = store.batch();
+  await seed.put(baseOid, "blob", base, deflateSync(base));
+  await seed.flush();
+
+  const delta = appendDelta(base, "added\n");
+  const target = Buffer.concat([base, Buffer.from("added\n")]);
+  const targetOid = hashObject("blob", target);
+  const pack = await packOf([
+    packEntry(7, delta.length, Buffer.from(baseOid, "hex"), deflateSync(delta)),
+  ]);
+  expect([...(await ingestPack(store, pack))]).toEqual([targetOid]);
+  expect(
+    db
+      .query("SELECT base, depth, dsize FROM objects WHERE oid = ?")
+      .get(targetOid),
+  ).toEqual({ base: baseOid, depth: 1, dsize: delta.length });
+  expect((await store.read(targetOid))?.content).toEqual(target);
+
+  const whole = await collect(writePack(store, [baseOid, targetOid]));
+  const reordered = await collect(writePack(store, [targetOid, baseOid]));
+  const full = deflateSync(base).length + deflateSync(target).length;
+  expect(whole.length).toBeLessThan(full * 0.7);
+  for (const pack of [whole, reordered]) {
+    const result = indexPack(pack);
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+  }
+
+  const alone = await collect(writePack(store, [targetOid]));
+  expect(alone.length).toBeGreaterThan(deflateSync(target).length);
+  expect(indexPack(alone).exitCode).toBe(0);
+});
+
+test("delta chains stop at the depth limit and the next version is stored whole", async () => {
+  const { ingestPack } = await import("../src/pack");
+  const { MAX_DELTA_DEPTH } = await import("../src/objects");
+  const { db, store } = setup();
+  let content = Buffer.from(
+    Array.from({ length: 200 }, (_, i) => `row ${i}\n`).join(""),
+  );
+  const first = hashObject("blob", content);
+  const seed = store.batch();
+  await seed.put(first, "blob", content, deflateSync(content));
+  await seed.flush();
+  const entries: Buffer[] = [];
+  const oids = [first];
+  for (let i = 0; i < MAX_DELTA_DEPTH + 2; i++) {
+    const delta = appendDelta(content, `v${i}\n`);
+    entries.push(
+      packEntry(
+        7,
+        delta.length,
+        Buffer.from(oids[oids.length - 1]!, "hex"),
+        deflateSync(delta),
+      ),
+    );
+    content = Buffer.concat([content, Buffer.from(`v${i}\n`)]);
+    oids.push(hashObject("blob", content));
+  }
+  await ingestPack(store, await packOf(entries));
+  const depths = oids.map(
+    (oid) =>
+      (
+        db.query("SELECT depth FROM objects WHERE oid = ?").get(oid) as {
+          depth: number;
+        }
+      ).depth,
+  );
+  expect(depths).toEqual([0, 1, 2, 3, 4, 0, 1]);
+  expect((await store.read(oids[oids.length - 1]!))?.content).toEqual(content);
+});
