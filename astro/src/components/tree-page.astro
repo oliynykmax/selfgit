@@ -1,0 +1,126 @@
+---
+import type { TreeView } from "../../../src/api-types";
+import {
+  blobUrl,
+  parentPath,
+  repoUrl,
+  treeUrl,
+} from "../lib/selfgit";
+
+interface Props {
+  repo: string;
+  path: string;
+  tree: TreeView;
+  originDuration: number;
+}
+
+const { repo, path, tree, originDuration } = Astro.props;
+const title = path ? `${path} · ${repo}` : repo;
+const parent = parentPath(path);
+const formattedTime = new Intl.DateTimeFormat("en", {
+  dateStyle: "medium",
+  timeStyle: "short",
+}).format(new Date(tree.commit.committer.time * 1000));
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>{title} · Astro preview</title>
+    <meta
+      name="description"
+      content="A server-rendered Astro preview of the selfgit repository tree."
+    />
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        background: #f8fafc;
+        color: #172033;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      main { width: min(100% - 2rem, 72rem); margin: 0 auto; padding: 2rem 0 4rem; }
+      a { color: inherit; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .notice { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin-bottom: 1.5rem; color: #516074; font-size: .875rem; }
+      .badge { border-radius: 999px; padding: .25rem .55rem; background: #e0e7ff; color: #3730a3; font-weight: 700; }
+      h1 { margin: 0; font-size: clamp(1.5rem, 4vw, 2rem); }
+      .crumbs { margin-top: .5rem; overflow-wrap: anywhere; color: #516074; }
+      .card { overflow: hidden; margin-top: 1.5rem; border: 1px solid #d8dee9; border-radius: .75rem; background: #fff; box-shadow: 0 1px 2px rgb(15 23 42 / .04); }
+      .commit { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .75rem; align-items: center; padding: .8rem 1rem; border-bottom: 1px solid #d8dee9; background: #f8fafc; font-size: .875rem; }
+      .commit a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #516074; }
+      .commit time { color: #64748b; font-size: .75rem; white-space: nowrap; }
+      ul { margin: 0; padding: 0; list-style: none; }
+      li + li { border-top: 1px solid #e5eaf1; }
+      .entry { display: flex; align-items: center; gap: .75rem; min-width: 0; padding: .7rem 1rem; }
+      .entry:hover { background: #f8fafc; text-decoration: none; }
+      .icon { width: 1.1rem; color: #64748b; text-align: center; }
+      .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875rem; }
+      .kind { margin-left: auto; color: #64748b; font-size: .75rem; }
+      .footer { margin-top: 1rem; color: #64748b; font-size: .75rem; }
+      @media (prefers-color-scheme: dark) {
+        :root { background: #0f172a; color: #e2e8f0; }
+        .notice, .crumbs, .commit a, .commit time, .icon, .kind, .footer { color: #94a3b8; }
+        .badge { background: #312e81; color: #e0e7ff; }
+        .card { border-color: #334155; background: #162033; }
+        .commit { border-color: #334155; background: #182235; }
+        li + li { border-color: #263449; }
+        .entry:hover { background: #1e293b; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="notice">
+        <span class="badge">Astro SSR preview</span>
+        <span>Filename tree is HTML from the Worker; no client JavaScript.</span>
+        <a href={repoUrl(repo)}>Open the production React viewer ↗</a>
+      </div>
+      <h1><a href={treeUrl(repo)}>{repo}</a></h1>
+      {path ? <p class="crumbs">/{path}</p> : null}
+      <section class="card" aria-label="Files">
+        <div class="commit">
+          <strong>{tree.commit.author.name}</strong>
+          <a href={`${repoUrl(repo)}/commit/${tree.commit.oid}`}>
+            {tree.commit.subject || "(no message)"}
+          </a>
+          <time datetime={new Date(tree.commit.committer.time * 1000).toISOString()}>
+            {formattedTime}
+          </time>
+        </div>
+        <ul>
+          {path ? (
+            <li>
+              <a class="entry" href={treeUrl(repo, parent)}>
+                <span class="icon" aria-hidden="true">↩</span>
+                <span class="name">..</span>
+                <span class="kind">parent</span>
+              </a>
+            </li>
+          ) : null}
+          {tree.entries.map((entry) => {
+            const folder = entry.kind === "tree";
+            const href = folder
+              ? treeUrl(repo, entry.path)
+              : blobUrl(repo, tree.commit.oid, entry.path);
+            return (
+              <li>
+                <a class="entry" href={href}>
+                  <span class="icon" aria-hidden="true">{folder ? "▸" : "·"}</span>
+                  <span class="name">{entry.name}</span>
+                  <span class="kind">{entry.kind}</span>
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+      <p class="footer">
+        Upstream tree request: {Math.round(originDuration)} ms · commit {tree.commit.oid.slice(0, 7)}
+      </p>
+    </main>
+  </body>
+</html>
