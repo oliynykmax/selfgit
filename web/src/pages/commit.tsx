@@ -1,8 +1,7 @@
 import { ChevronDown } from "lucide-react";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import type { CommitView, FileDiff, RepoName } from "../../../src/api-types";
 import { Link } from "@/components/link";
-import { CommitDiff, DiffDisplayControls } from "@/components/pierre";
 import { LoadingRows, Problem } from "@/components/states";
 import { Time } from "@/components/time";
 import { useApi } from "@/lib/api";
@@ -15,6 +14,14 @@ const STATUS_LABEL: Record<FileDiff["status"], string> = {
   modified: "modified",
   "type-changed": "type changed",
 };
+
+const CommitDiff = lazy(async () => ({
+  default: (await import("@/components/pierre")).CommitDiff,
+}));
+
+const DiffDisplayControls = lazy(async () => ({
+  default: (await import("@/components/pierre")).DiffDisplayControls,
+}));
 
 function Counts({
   additions,
@@ -82,12 +89,14 @@ function FileCard({
         </p>
       ) : (
         <div className="border-t">
-          <CommitDiff
-            file={file}
-            cacheKey={`${commit}:${file.path}`}
-            style={style}
-            wrap={wrap}
-          />
+          <Suspense fallback={<LoadingRows />}>
+            <CommitDiff
+              file={file}
+              cacheKey={`${commit}:${file.path}`}
+              style={style}
+              wrap={wrap}
+            />
+          </Suspense>
         </div>
       )}
     </details>
@@ -195,12 +204,14 @@ export function CommitPage({ repo, oid }: { repo: RepoName; oid: string }) {
         <span className="text-muted-foreground">
           {plural(files.length, "changed file")}
         </span>
-        <DiffDisplayControls
-          style={style}
-          wrap={wrap}
-          onStyleChange={setStyle}
-          onWrapChange={setWrap}
-        />
+        <Suspense fallback={null}>
+          <DiffDisplayControls
+            style={style}
+            wrap={wrap}
+            onStyleChange={setStyle}
+            onWrapChange={setWrap}
+          />
+        </Suspense>
       </div>
       {files.map((file) => (
         <FileCard
