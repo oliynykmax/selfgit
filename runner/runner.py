@@ -34,7 +34,7 @@ def execute(job):
         raise ValueError('Invalid CI job')
     lease = {'id': job['id'], 'leaseToken': job['leaseToken']}
     script = '''set -eu
-export HOME=/tmp/home TMPDIR=/tmp
+export HOME=/tmp/home TMPDIR=/tmp BUN_INSTALL_CACHE_DIR=/cache
 mkdir -p "$HOME" /tmp/work
 cd /tmp/work
 git init -q
@@ -43,13 +43,15 @@ git fetch --depth=1 origin "$1"
 git checkout --detach FETCH_HEAD
 test "$(git rev-parse HEAD)" = "$1"
 run() { printf '\\n$ %s\\n' "$1"; sh -c "$1"; }
-run 'bun install --frozen-lockfile'
+run 'bun install --frozen-lockfile --backend=copyfile'
 export MINIFLARE_WORKERD_PATH="/opt/workerd/$(node -p 'require("workerd/package.json").version')"
 test -x "$MINIFLARE_WORKERD_PATH" || run "curl -fsSL $2/v${MINIFLARE_WORKERD_PATH##*/}/workerd.gz | gunzip > $MINIFLARE_WORKERD_PATH.part && chmod 755 $MINIFLARE_WORKERD_PATH.part && mv $MINIFLARE_WORKERD_PATH.part $MINIFLARE_WORKERD_PATH"
 run 'bun run ci'
 '''
     workspace = tempfile.TemporaryDirectory(prefix='job-', dir=os.environ.get('SELFGIT_CI_WORKDIR', os.path.expanduser('~/ci-work')))
-    cmd = ['proot-distro', 'login', DISTRO, '--isolated', '--bind', workspace.name + ':/tmp', '--',
+    cache = os.environ.get('SELFGIT_CI_CACHE', os.path.expanduser('~/ci-cache'))
+    os.makedirs(cache, exist_ok=True)
+    cmd = ['proot-distro', 'login', DISTRO, '--isolated', '--bind', workspace.name + ':/tmp', '--bind', cache + ':/cache', '--',
            'sh', '-c', script, 'ci', job['commit'], WORKERD_RELEASES]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     selector = selectors.DefaultSelector()
