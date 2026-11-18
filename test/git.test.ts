@@ -1056,8 +1056,12 @@ describe("smart HTTP Git on a Durable Object", () => {
       join(src, "logo.png"),
       Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"),
     );
+    writeFileSync(
+      join(src, "logo.svg"),
+      '<svg xmlns="http://www.w3.org/2000/svg"/>',
+    );
     writeFileSync(join(src, "page.html"), "<script>alert(1)</script>");
-    ok(src, "add", "logo.png", "page.html");
+    ok(src, "add", "logo.png", "logo.svg", "page.html");
     ok(src, "commit", "-q", "-m", "Add assets");
     ok(src, "checkout", "-q", "-b", "topic/x");
     const topic = commit(src, "topic.txt", "t\n", "Topic work");
@@ -1087,6 +1091,7 @@ describe("smart HTTP Git on a Durable Object", () => {
     ).toEqual([
       ["src", "tree"],
       ["logo.png", "blob"],
+      ["logo.svg", "blob"],
       ["page.html", "blob"],
       ["README.md", "blob"],
     ]);
@@ -1119,6 +1124,10 @@ describe("smart HTTP Git on a Durable Object", () => {
       kind: "image",
       mime: "image/png",
     });
+    expect((await api("/blob?ref=main&path=logo.svg")).body.content).toEqual({
+      kind: "image",
+      mime: "image/svg+xml",
+    });
 
     const history = await api("/commits?ref=main&path=src/main.c");
     expect(
@@ -1142,6 +1151,12 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect(html.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
     expect(html.headers.get("Content-Security-Policy")).toContain("sandbox");
     expect(html.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    const svg = await fetch(
+      `${base}/api/repos/fixture10/raw?ref=main&path=logo.svg`,
+    );
+    expect(svg.headers.get("Content-Type")).toBe("image/svg+xml");
+    expect(svg.headers.get("Content-Security-Policy")).toContain("sandbox");
+    expect(svg.headers.get("X-Content-Type-Options")).toBe("nosniff");
 
     const page = await fetch(`${base}/fixture10/tree/main/src`);
     expect(page.status).toBe(200);
