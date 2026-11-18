@@ -1,6 +1,11 @@
 import type { RepoRefs, TreeView } from "../../../src/api-types";
+import { env } from "cloudflare:workers";
 
 const ORIGIN = "https://git.oliinyk.dev";
+type ServiceBinding = {
+  fetch(request: Request): Promise<Response>;
+};
+const selfgit = (env as unknown as { SELF_GIT: ServiceBinding }).SELF_GIT;
 
 function encodePath(path: string): string {
   return path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
@@ -8,6 +13,13 @@ function encodePath(path: string): string {
 
 export function siteUrl(path: string): string {
   return new URL(path, ORIGIN).toString();
+}
+
+export function fetchSelfgit(
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
+  return selfgit.fetch(new Request(siteUrl(path), init));
 }
 
 export function repoUrl(repo: string): string {
@@ -40,8 +52,8 @@ export async function treeFor(
   const params = new URLSearchParams({ ref });
   if (path) params.set("path", path);
   const startedAt = performance.now();
-  const response = await fetch(
-    siteUrl(`/api/repos/${encodeURIComponent(repo)}/tree?${params}`),
+  const response = await fetchSelfgit(
+    `/api/repos/${encodeURIComponent(repo)}/tree?${params}`,
     { headers: { Accept: "application/json" } },
   );
   const duration = performance.now() - startedAt;
@@ -57,7 +69,7 @@ export async function viewFor(
 ): Promise<{ tree: TreeView; refs: RepoRefs; duration: number }> {
   const [treeResult, refs] = await Promise.all([
     treeFor(repo, path, ref),
-    fetch(siteUrl(`/api/repos/${encodeURIComponent(repo)}`), {
+    fetchSelfgit(`/api/repos/${encodeURIComponent(repo)}`, {
       headers: { Accept: "application/json" },
     }).then(async (response) => {
       if (!response.ok)
