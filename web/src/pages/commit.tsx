@@ -1,29 +1,19 @@
 import { ChevronDown } from "lucide-react";
-import type {
-  CommitView,
-  DiffLine,
-  FileDiff,
-  RepoName,
-} from "../../../src/api-types";
+import { useState } from "react";
+import type { CommitView, FileDiff, RepoName } from "../../../src/api-types";
 import { Link } from "@/components/link";
+import { CommitDiff, DiffDisplayControls } from "@/components/pierre";
 import { LoadingRows, Problem } from "@/components/states";
 import { Time } from "@/components/time";
 import { useApi } from "@/lib/api";
 import { fullDate, plural, shortOid } from "@/lib/format";
 import { apiUrl, href } from "@/lib/route";
-import { cn } from "@/lib/utils";
 
 const STATUS_LABEL: Record<FileDiff["status"], string> = {
   added: "added",
   deleted: "deleted",
   modified: "modified",
   "type-changed": "type changed",
-};
-
-const LINE_STYLE: Record<DiffLine["kind"], string> = {
-  context: "",
-  add: "bg-added-muted",
-  del: "bg-removed-muted",
 };
 
 function Counts({
@@ -45,10 +35,14 @@ function FileCard({
   repo,
   commit,
   file,
+  style,
+  wrap,
 }: {
   repo: RepoName;
   commit: string;
   file: FileDiff;
+  style: "unified" | "split";
+  wrap: boolean;
 }) {
   return (
     <details
@@ -87,50 +81,13 @@ function FileCard({
             : "Mode changed."}
         </p>
       ) : (
-        <div className="overflow-x-auto border-t">
-          <table className="w-full border-collapse font-mono text-[0.8rem] leading-5">
-            {file.hunks.map((hunk) => (
-              <tbody key={hunk.header}>
-                <tr>
-                  <td
-                    colSpan={3}
-                    className="bg-muted/60 px-3 py-1 text-xs text-muted-foreground"
-                  >
-                    {hunk.header}
-                  </td>
-                </tr>
-                {hunk.lines.map((line, index) => (
-                  <tr key={index} className={LINE_STYLE[line.kind]}>
-                    <td className="w-px px-2 text-right text-muted-foreground select-none">
-                      {line.oldLine ?? ""}
-                    </td>
-                    <td className="w-px border-r px-2 text-right text-muted-foreground select-none">
-                      {line.newLine ?? ""}
-                    </td>
-                    <td className="px-3 whitespace-pre">
-                      <span
-                        className={cn(
-                          "mr-2 select-none",
-                          line.kind === "add"
-                            ? "text-added"
-                            : line.kind === "del"
-                              ? "text-removed"
-                              : "text-transparent",
-                        )}
-                      >
-                        {line.kind === "add"
-                          ? "+"
-                          : line.kind === "del"
-                            ? "-"
-                            : " "}
-                      </span>
-                      {line.text}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            ))}
-          </table>
+        <div className="border-t">
+          <CommitDiff
+            file={file}
+            cacheKey={`${commit}:${file.path}`}
+            style={style}
+            wrap={wrap}
+          />
         </div>
       )}
     </details>
@@ -139,6 +96,8 @@ function FileCard({
 
 export function CommitPage({ repo, oid }: { repo: RepoName; oid: string }) {
   const view = useApi<CommitView>(apiUrl(`repos/${repo}/commits/${oid}`));
+  const [style, setStyle] = useState<"unified" | "split">("unified");
+  const [wrap, setWrap] = useState(false);
   if (view.status === "loading")
     return (
       <div className="rounded-lg border">
@@ -231,14 +190,27 @@ export function CommitPage({ repo, oid }: { repo: RepoName; oid: string }) {
           </Link>
         </div>
       </section>
-      <div className="flex items-center gap-3 text-sm">
+      <div className="flex flex-wrap items-center gap-3 text-sm">
         <Counts additions={additions} deletions={deletions} />
         <span className="text-muted-foreground">
           {plural(files.length, "changed file")}
         </span>
+        <DiffDisplayControls
+          style={style}
+          wrap={wrap}
+          onStyleChange={setStyle}
+          onWrapChange={setWrap}
+        />
       </div>
       {files.map((file) => (
-        <FileCard key={file.path} repo={repo} commit={commit.oid} file={file} />
+        <FileCard
+          key={file.path}
+          repo={repo}
+          commit={commit.oid}
+          file={file}
+          style={style}
+          wrap={wrap}
+        />
       ))}
       {truncated ? (
         <p className="text-sm text-muted-foreground">
