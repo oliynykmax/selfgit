@@ -124,8 +124,10 @@ Every push to the `main` branch of selfgit's own repository queues a CI job. [`r
 
 These are Cloudflare Workers Free plan limits.
 
-- Request bodies are capped at 100 MB.
-- A Durable Object has 128 MB of memory and 30 s of CPU per request. A push holds the pack and its largest object in memory, so a single file over roughly 40 MB may fail.
+- Request bodies are capped at 100 MB, so a push of one file can be up to about 99 MB. Anything larger is refused with HTTP 413 before it reaches the Worker.
+- A Durable Object has 128 MB of memory. Pushes and clones stream, so file size does not use it. Blobs over 1 MB go to R2 as a multipart upload while they arrive, and clones copy them back as a stream.
+- A delta, a delta base, a tree or a commit has to fit in 32 MB. When a push edits a file whose previous version is larger than that, git sends a delta that selfgit refuses, and the error says to push it without deltas: `git -c pack.window=0 push`.
+- Selfgit serves one request per repository at a time, so a large push makes every other push and clone of that repository wait until it finishes.
 - R2 has a monthly free allowance for storage and operations. See [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and [R2 limits](https://developers.cloudflare.com/r2/platform/limits/).
 
 </details>
