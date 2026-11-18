@@ -109,14 +109,14 @@ class BaseCache {
   private bytes = 0;
   constructor(
     private readonly store: ObjectStore,
-    private readonly beforeStoreRead: () => Promise<void>,
+    private readonly batch: ReturnType<ObjectStore["batch"]>,
     private readonly limit = 32 << 20,
   ) {}
 
   async get(oid: string): Promise<{ type: ObjectType; content: Buffer }> {
     const hit = this.entries.get(oid);
     if (hit) return hit;
-    await this.beforeStoreRead();
+    if (this.batch.has(oid)) await this.batch.flush();
     const object = await this.store.read(oid);
     if (!object) throw new CorruptObject(`missing delta base ${oid}`);
     this.add(oid, object);
@@ -158,7 +158,7 @@ export async function ingestPack(
   const resolved = new Map<number, string>();
   const pending: PendingDelta[] = [];
   const batch = store.batch();
-  const cache = new BaseCache(store, batch.flush);
+  const cache = new BaseCache(store, batch);
   const keep = async (
     oid: string,
     type: ObjectType,

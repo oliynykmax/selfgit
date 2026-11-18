@@ -480,6 +480,8 @@ export class ObjectStore {
         return true;
       },
       flush,
+      /** True while the object is held in memory and not yet readable from the store. */
+      has: (oid: string) => staged.has(oid),
       discard: () => {
         staged.clear();
         bytes = 0;

@@ -297,3 +297,33 @@ test("R2 audit reports verified, missing and corrupt objects without changing SQ
     count: 3,
   });
 });
+
+test("a pack of deltas against stored bases is written as one bundle", async () => {
+  const { ingestPack } = await import("../src/pack");
+  const { createHash } = await import("node:crypto");
+  const { calls, store } = setup();
+  const bases = blobs(6);
+  const seed = store.batch();
+  for (const { oid, content, z } of bases)
+    await seed.put(oid, "blob", content, z);
+  await seed.flush();
+  calls.put = 0;
+  const entries = bases.map(({ oid, content }, i) => {
+    const text = Buffer.from(`delta target ${i} built from ${content.length}`);
+    const delta = Buffer.concat([
+      Buffer.from([content.length, text.length, text.length]),
+      text,
+    ]);
+    const header = Buffer.from([0xf0 | (delta.length & 15), delta.length >> 4]);
+    return Buffer.concat([header, Buffer.from(oid, "hex"), deflateSync(delta)]);
+  });
+  const head = Buffer.alloc(12);
+  head.write("PACK");
+  head.writeUInt32BE(2, 4);
+  head.writeUInt32BE(entries.length, 8);
+  const body = Buffer.concat([head, ...entries]);
+  const pack = Buffer.concat([body, createHash("sha1").update(body).digest()]);
+  const added = await ingestPack(store, pack);
+  expect(added.size).toBe(bases.length);
+  expect(calls.put).toBe(1);
+});
