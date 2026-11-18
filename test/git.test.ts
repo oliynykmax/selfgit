@@ -722,6 +722,33 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect(packSize).toBeLessThan(wholeSize / 2);
   });
 
+  test("a 12 MB file streams in and out, and a later edit of it travels as a delta", async () => {
+    expect((await createRepo("fixture-big")).status).toBe(201);
+    const src = newRepo("fixture-big");
+    const content = randomBytes(12 << 20);
+    commit(src, "big.bin", content);
+    ok(src, "push", "-q", "origin", "main");
+    const copy = clone("fixture-big");
+    expect(readFileSync(join(copy, "big.bin")).equals(content)).toBe(true);
+    ok(copy, "fsck", "--strict");
+
+    const edited = Buffer.concat([content, Buffer.from("a late edit\n")]);
+    commit(src, "big.bin", edited);
+    ok(src, "push", "-q", "origin", "main");
+    ok(copy, "pull", "-q", "--ff-only");
+    expect(readFileSync(join(copy, "big.bin")).equals(edited)).toBe(true);
+    ok(copy, "fsck", "--strict");
+
+    const fresh = clone("fixture-big", "-c", "transfer.unpackLimit=1");
+    expect(readFileSync(join(fresh, "big.bin")).equals(edited)).toBe(true);
+    ok(fresh, "fsck", "--strict");
+    const packs = readdirSync(join(fresh, ".git/objects/pack")).filter((name) =>
+      name.endsWith(".pack"),
+    );
+    const received = statSync(join(fresh, ".git/objects/pack", packs[0]!)).size;
+    expect(received).toBeLessThan(content.length * 1.2);
+  });
+
   test("large binary objects split across storage rows", () => {
     const src = newRepo("fixture4");
     const big = randomBytes(5 * 1024 * 1024 + 123);

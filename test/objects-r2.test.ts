@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
+import { randomBytes } from "node:crypto";
 import { deflateSync } from "node:zlib";
 import { ObjectStore, hashObject, deleteRepoObjects } from "../src/objects";
 
@@ -16,7 +17,7 @@ function setup() {
     },
   } as unknown as SqlStorage;
   const data = new Map<string, Uint8Array>();
-  const calls = { get: 0, put: 0, head: 0 };
+  const calls = { get: 0, put: 0, head: 0, multipart: 0, parts: 0, aborted: 0 };
   let fail = false;
   const bucket = {
     async put(key: string, value: Uint8Array) {
@@ -35,7 +36,28 @@ function setup() {
       const part = range
         ? value.slice(range.offset, range.offset + range.length)
         : value;
-      return { arrayBuffer: async () => Uint8Array.from(part).buffer };
+      return {
+        arrayBuffer: async () => Uint8Array.from(part).buffer,
+        body: new Response(Uint8Array.from(part)).body,
+      };
+    },
+    async createMultipartUpload(key: string) {
+      calls.multipart++;
+      const parts: Uint8Array[] = [];
+      return {
+        async uploadPart(number: number, bytes: Uint8Array) {
+          if (fail) throw new Error("R2 unavailable");
+          calls.parts++;
+          parts[number - 1] = Uint8Array.from(bytes);
+          return { partNumber: number, etag: String(number) };
+        },
+        async complete() {
+          data.set(key, Buffer.concat(parts));
+        },
+        async abort() {
+          calls.aborted++;
+        },
+      };
     },
     async head(key: string) {
       calls.head++;
@@ -299,7 +321,7 @@ test("R2 audit reports verified, missing and corrupt objects without changing SQ
 });
 
 test("a pack of deltas against stored bases is written as one bundle", async () => {
-  const { ingestPack } = await import("../src/pack");
+  const { ingestPack } = await import("../src/ingest");
   const { createHash } = await import("node:crypto");
   const { calls, store } = setup();
   const bases = blobs(6);
@@ -389,7 +411,8 @@ function indexPack(pack: Buffer) {
 }
 
 test("deltas are stored as sent, shipped as deltas with their base, and read back whole", async () => {
-  const { ingestPack, writePack } = await import("../src/pack");
+  const { ingestPack } = await import("../src/ingest");
+  const { writePack } = await import("../src/pack");
   const { db, store } = setup();
   const base = Buffer.from(
     Array.from({ length: 300 }, (_, i) => `line ${i}\n`).join(""),
@@ -429,7 +452,7 @@ test("deltas are stored as sent, shipped as deltas with their base, and read bac
 });
 
 test("delta chains stop at the depth limit and the next version is stored whole", async () => {
-  const { ingestPack } = await import("../src/pack");
+  const { ingestPack } = await import("../src/ingest");
   const { MAX_DELTA_DEPTH } = await import("../src/objects");
   const { db, store } = setup();
   let content = Buffer.from(
@@ -468,7 +491,7 @@ test("delta chains stop at the depth limit and the next version is stored whole"
 });
 
 test("a pack whose deltas use bases from the same pack is written with one R2 request and no reads", async () => {
-  const { ingestPack } = await import("../src/pack");
+  const { ingestPack } = await import("../src/ingest");
   const { calls, store } = setup();
   const base = Buffer.from(
     Array.from({ length: 300 }, (_, i) => `line ${i}\n`).join(""),
@@ -497,4 +520,167 @@ test("a pack whose deltas use bases from the same pack is written with one R2 re
   expect(calls.put).toBe(1);
   expect(calls.get).toBe(0);
   expect((await store.read(previous))?.content).toEqual(content);
+});
+
+function streamOf(buffer: Buffer, chunk: number) {
+  let at = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (at >= buffer.length) return controller.close();
+      controller.enqueue(Uint8Array.from(buffer.subarray(at, at + chunk)));
+      at += chunk;
+    },
+  });
+}
+
+test("a pack arriving in tiny chunks is ingested like one arriving whole", async () => {
+  const { ingestPack } = await import("../src/ingest");
+  const { store } = setup();
+  const objects = blobs(40);
+  const pack = await packOf(
+    objects.map((o) => packEntry(3, o.content.length, Buffer.alloc(0), o.z)),
+  );
+  const added = await ingestPack(store, streamOf(pack, 7));
+  expect(added.size).toBe(40);
+  for (const o of objects)
+    expect((await store.read(o.oid))?.content).toEqual(o.content);
+});
+
+test("a large blob streams into R2 as a multipart upload and is hashed without being unpacked", async () => {
+  const { ingestPack } = await import("../src/ingest");
+  const { writePack } = await import("../src/pack");
+  const { db, data, calls, store } = setup();
+  const content = randomBytes(9 << 20);
+  const oid = hashObject("blob", content);
+  const z = deflateSync(content);
+  const pack = await packOf([packEntry(3, content.length, Buffer.alloc(0), z)]);
+  const added = await ingestPack(store, streamOf(pack, 256 << 10));
+  expect([...added]).toEqual([oid]);
+  expect(calls.multipart).toBe(1);
+  expect(calls.parts).toBe(2);
+  expect(calls.put).toBe(0);
+  const row = db
+    .query("SELECT bundle, off, len, in_r2 FROM objects WHERE oid = ?")
+    .get(oid) as { bundle: string; off: number; len: number; in_r2: number };
+  expect(row.off).toBe(0);
+  expect(row.len).toBe(z.length);
+  expect(data.get(row.bundle)!.length).toBe(z.length);
+  expect((await store.read(oid))?.content.equals(content)).toBe(true);
+
+  const sent = await collect(writePack(store, [oid]));
+  expect(indexPack(sent).exitCode).toBe(0);
+  expect(store.payloadLength(oid)).toBe(z.length);
+});
+
+test("a blob under the multipart size streams through and is stored with the other objects", async () => {
+  const { ingestPack } = await import("../src/ingest");
+  const { calls, db, store } = setup();
+  const content = randomBytes(3 << 20);
+  const oid = hashObject("blob", content);
+  const pack = await packOf([
+    packEntry(3, content.length, Buffer.alloc(0), deflateSync(content)),
+  ]);
+  await ingestPack(store, streamOf(pack, 100_000));
+  expect(calls.multipart).toBe(0);
+  expect(calls.put).toBe(1);
+  expect(
+    (
+      db.query("SELECT size FROM objects WHERE oid = ?").get(oid) as {
+        size: number;
+      }
+    ).size,
+  ).toBe(content.length);
+  expect((await store.read(oid))?.content.equals(content)).toBe(true);
+});
+
+test("a corrupt or truncated large blob leaves nothing behind and aborts the upload", async () => {
+  const { ingestPack } = await import("../src/ingest");
+  const { calls, db, store } = setup();
+  const content = randomBytes(9 << 20);
+  const z = deflateSync(content);
+  const whole = await packOf([
+    packEntry(3, content.length, Buffer.alloc(0), z),
+  ]);
+  const truncated = whole.subarray(0, whole.length - 5 - 20);
+  await expect(ingestPack(store, streamOf(truncated, 1 << 20))).rejects.toThrow(
+    "pack truncated",
+  );
+  expect(calls.aborted).toBe(1);
+  const lying = await packOf([
+    packEntry(3, content.length - 1, Buffer.alloc(0), z),
+  ]);
+  await expect(ingestPack(store, streamOf(lying, 1 << 20))).rejects.toThrow();
+  const tampered = Buffer.from(whole);
+  tampered[whole.length - 30] ^= 0xff;
+  await expect(
+    ingestPack(store, streamOf(tampered, 1 << 20)),
+  ).rejects.toThrow();
+  expect(db.query("SELECT count(*) AS n FROM objects").get()).toEqual({ n: 0 });
+});
+
+test("a delta against a large blob is hashed as it is replayed and read back whole", async () => {
+  const { ingestPack } = await import("../src/ingest");
+  const { writePack } = await import("../src/pack");
+  const { db, store } = setup();
+  const base = randomBytes((2 << 20) + 1000);
+  const baseOid = hashObject("blob", base);
+  const seed = store.batch();
+  await seed.put(baseOid, "blob", base, deflateSync(base));
+  await seed.flush();
+  const extra = "appended tail\n";
+  const target = Buffer.concat([base, Buffer.from(extra)]);
+  const targetOid = hashObject("blob", target);
+  const delta = Buffer.concat([
+    varint(base.length),
+    varint(target.length),
+    Buffer.from([
+      0x80 | 0x10 | 0x20 | 0x40,
+      base.length & 0xff,
+      (base.length >> 8) & 0xff,
+      base.length >> 16,
+    ]),
+    Buffer.from([extra.length]),
+    Buffer.from(extra),
+  ]);
+  const pack = await packOf([
+    packEntry(7, delta.length, Buffer.from(baseOid, "hex"), deflateSync(delta)),
+  ]);
+  expect([...(await ingestPack(store, streamOf(pack, 50_000)))]).toEqual([
+    targetOid,
+  ]);
+  expect(
+    db.query("SELECT base, dsize FROM objects WHERE oid = ?").get(targetOid),
+  ).toEqual({ base: baseOid, dsize: delta.length });
+  expect((await store.read(targetOid))?.content.equals(target)).toBe(true);
+  const sent = await collect(writePack(store, [targetOid]));
+  expect(indexPack(sent).exitCode).toBe(0);
+  expect(sent.length).toBeLessThan(base.length * 1.1);
+});
+
+test("objects too large to unpack in memory are refused with a way forward", async () => {
+  const { ingestPack } = await import("../src/ingest");
+  const { db, store } = setup();
+  const header = Buffer.alloc(12);
+  header.write("PACK");
+  header.writeUInt32BE(2, 4);
+  header.writeUInt32BE(1, 8);
+  const hugeTree = Buffer.concat([
+    header,
+    packEntry(2, 40 << 20, Buffer.alloc(0), Buffer.alloc(0)),
+  ]);
+  await expect(ingestPack(store, hugeTree)).rejects.toThrow(
+    /too large to unpack in memory/,
+  );
+
+  const bigBase = "ab".repeat(20);
+  db.query(
+    "INSERT INTO objects (oid, type, size, links, in_r2) VALUES (?, 3, ?, '', 0)",
+  ).run(bigBase, 40 << 20);
+  const delta = Buffer.from([0, 0]);
+  const pack = await packOf([
+    packEntry(7, delta.length, Buffer.from(bigBase, "hex"), deflateSync(delta)),
+  ]);
+  await expect(ingestPack(store, pack)).rejects.toThrow(
+    /delta base .* is 40 MB, too large.*pack\.window=0/,
+  );
 });
