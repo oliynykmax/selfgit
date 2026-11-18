@@ -1,14 +1,25 @@
 ---
 import TreePage from "../../components/tree-page.astro";
-import { treeFor } from "../../lib/selfgit";
+import Site from "../../layouts/site.astro";
+import { viewFor } from "../../lib/selfgit";
 
 const repo = Astro.params.repo ?? "";
 const path = Astro.params.path ?? "";
-const { tree, duration: originDuration } = await treeFor(repo, path);
+const ref = Astro.url.searchParams.get("ref") ?? "HEAD";
+const { tree, refs, duration: originDuration } = await viewFor(repo, path, ref);
 Astro.response.headers.set(
   "Server-Timing",
   `selfgit-tree;dur=${originDuration.toFixed(1)}`,
 );
 ---
 
-<TreePage repo={repo} path={path} tree={tree} originDuration={originDuration} />
+<Site title={`${repo} · git.oliinyk.dev`}>
+  <TreePage
+    repo={repo}
+    path={path}
+    ref={ref}
+    refs={refs}
+    tree={tree}
+    originDuration={originDuration}
+  />
+</Site>

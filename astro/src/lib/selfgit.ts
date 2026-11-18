@@ -1,4 +1,4 @@
-import type { TreeView } from "../../../src/api-types";
+import type { RepoRefs, TreeView } from "../../../src/api-types";
 
 const ORIGIN = "https://git.oliinyk.dev";
 
@@ -18,8 +18,14 @@ export function blobUrl(repo: string, oid: string, path: string): string {
   return `${ORIGIN}/${encodeURIComponent(repo)}/blob/${encodeURIComponent(oid)}/${encodePath(path)}`;
 }
 
-export function treeUrl(repo: string, path = ""): string {
-  return `/${encodeURIComponent(repo)}${path ? `/${encodePath(path)}` : ""}`;
+export function rawUrl(repo: string, oid: string, path: string): string {
+  const query = new URLSearchParams({ ref: oid, path });
+  return siteUrl(`/api/repos/${encodeURIComponent(repo)}/raw?${query}`);
+}
+
+export function treeUrl(repo: string, path = "", ref = "HEAD"): string {
+  const base = `/${encodeURIComponent(repo)}${path ? `/${encodePath(path)}` : ""}`;
+  return ref === "HEAD" ? base : `${base}?ref=${encodeURIComponent(ref)}`;
 }
 
 export function parentPath(path: string): string {
@@ -29,8 +35,9 @@ export function parentPath(path: string): string {
 export async function treeFor(
   repo: string,
   path: string,
+  ref = "HEAD",
 ): Promise<{ tree: TreeView; duration: number }> {
-  const params = new URLSearchParams({ ref: "HEAD" });
+  const params = new URLSearchParams({ ref });
   if (path) params.set("path", path);
   const startedAt = performance.now();
   const response = await fetch(
@@ -41,4 +48,22 @@ export async function treeFor(
   if (!response.ok)
     throw new Error(`Repository request failed (${response.status})`);
   return { tree: (await response.json()) as TreeView, duration };
+}
+
+export async function viewFor(
+  repo: string,
+  path: string,
+  ref = "HEAD",
+): Promise<{ tree: TreeView; refs: RepoRefs; duration: number }> {
+  const [treeResult, refs] = await Promise.all([
+    treeFor(repo, path, ref),
+    fetch(siteUrl(`/api/repos/${encodeURIComponent(repo)}`), {
+      headers: { Accept: "application/json" },
+    }).then(async (response) => {
+      if (!response.ok)
+        throw new Error(`Repository request failed (${response.status})`);
+      return (await response.json()) as RepoRefs;
+    }),
+  ]);
+  return { ...treeResult, refs };
 }
