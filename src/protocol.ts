@@ -464,7 +464,10 @@ export async function receivePack(
         else if (results.has(command.ref))
           results.set(command.ref, "duplicate ref update");
         else if (current !== command.old)
-          results.set(command.ref, "failed to update ref");
+          results.set(
+            command.ref,
+            `cannot lock ref '${command.ref}': is at ${current} but expected ${command.old}`,
+          );
         else if (command.new !== ZERO_OID && !store.info(command.new))
           results.set(command.ref, "missing necessary objects");
         else results.set(command.ref, "ok");
