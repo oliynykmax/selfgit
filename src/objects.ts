@@ -129,6 +129,8 @@ const BUNDLE_BYTES = 8 << 20;
 const RANGE_GAP = 64 << 10;
 const FETCH_CONCURRENCY = 16;
 const REPACK_ROWS = 2000;
+/** Rows are small and immutable, so a clone looks each object up once instead of once per use. */
+const ROW_CACHE_ENTRIES = 50_000;
 
 interface Staged {
   oid: string;
@@ -176,11 +178,16 @@ export class ObjectStore {
   >();
   private readCacheBytes = 0;
   private readonly verifiedBundles = new Set<string>();
+  private readonly rows = new Map<
+    string,
+    { info: ObjectInfo; place: Placement }
+  >();
 
   clearReadCache(): void {
     this.readCache.clear();
     this.readCacheBytes = 0;
     this.verifiedBundles.clear();
+    this.rows.clear();
   }
 
   constructor(
@@ -263,12 +270,7 @@ export class ObjectStore {
   }
 
   async has(oid: string): Promise<boolean> {
-    const row = this.sql
-      .exec<Placement>(
-        "SELECT in_r2, bundle, off, len FROM objects WHERE oid = ?",
-        oid,
-      )
-      .toArray()[0];
+    const row = this.lookup(oid)?.place;
     if (!row) return false;
     if (!row.in_r2) return true;
     if (!row.bundle) return (await this.bucket.head(this.key(oid))) !== null;
@@ -279,21 +281,39 @@ export class ObjectStore {
   }
 
   info(oid: string): ObjectInfo | null {
+    return this.lookup(oid)?.info ?? null;
+  }
+
+  private lookup(oid: string) {
+    const hit = this.rows.get(oid);
+    if (hit) return hit;
     const row = this.sql
-      .exec<ObjectRow>(
-        "SELECT type, size, links, base, dsize, depth FROM objects WHERE oid = ?",
+      .exec<ObjectRow & Placement>(
+        "SELECT type, size, links, base, dsize, depth, in_r2, bundle, off, len FROM objects WHERE oid = ?",
         oid,
       )
       .toArray()[0];
     if (!row) return null;
-    return {
-      type: typeFromCode(row.type)!,
-      size: row.size,
-      base: row.base,
-      deltaSize: row.dsize ?? 0,
-      depth: row.depth ?? 0,
-      links: row.links ? row.links.split(" ") : [],
+    const entry = {
+      info: {
+        type: typeFromCode(row.type)!,
+        size: row.size,
+        base: row.base,
+        deltaSize: row.dsize ?? 0,
+        depth: row.depth ?? 0,
+        links: row.links ? row.links.split(" ") : [],
+      },
+      place: {
+        in_r2: row.in_r2,
+        bundle: row.bundle,
+        off: row.off,
+        len: row.len,
+      },
     };
+    if (this.rows.size >= ROW_CACHE_ENTRIES)
+      this.rows.delete(this.rows.keys().next().value!);
+    this.rows.set(oid, entry);
+    return entry;
   }
 
   private key(oid: string): string {
@@ -302,20 +322,21 @@ export class ObjectStore {
 
   /** Reads legacy SQLite payloads and migrates them only after verifying the R2 copy. */
   async zdata(oid: string): Promise<Buffer> {
-    const row = this.sql
-      .exec<{ zdata: ArrayBuffer | null } & Placement>(
-        "SELECT zdata, in_r2, bundle, off, len FROM objects WHERE oid = ?",
-        oid,
-      )
-      .toArray()[0];
-    if (!row) throw new CorruptObject(`missing object ${oid}`);
-    const info = this.info(oid)!;
-    if (row.in_r2) {
-      const data = await this.payload(oid, row);
+    const entry = this.lookup(oid);
+    if (!entry) throw new CorruptObject(`missing object ${oid}`);
+    const { info, place } = entry;
+    if (place.in_r2) {
+      const data = await this.payload(oid, place);
       if (!data) throw new CorruptObject(`missing R2 object ${oid}`);
       if (!info.base) this.verify(oid, info.type, data);
       return data;
     }
+    const row = this.sql
+      .exec<{ zdata: ArrayBuffer | null }>(
+        "SELECT zdata FROM objects WHERE oid = ?",
+        oid,
+      )
+      .toArray()[0]!;
     const data = row.zdata
       ? Buffer.from(row.zdata)
       : Buffer.concat(
@@ -333,6 +354,7 @@ export class ObjectStore {
     if (!copy) throw new CorruptObject(`missing R2 object ${oid} after upload`);
     this.verify(oid, info.type, Buffer.from(await copy.arrayBuffer()));
     this.sql.exec("UPDATE objects SET in_r2 = 1 WHERE oid = ?", oid);
+    this.rows.delete(oid);
     return data;
   }
 
@@ -358,12 +380,7 @@ export class ObjectStore {
     >();
     const single: string[] = [];
     for (const oid of oids) {
-      const row = this.sql
-        .exec<Placement>(
-          "SELECT in_r2, bundle, off, len FROM objects WHERE oid = ?",
-          oid,
-        )
-        .toArray()[0];
+      const row = this.lookup(oid)?.place;
       if (row?.in_r2 && row.bundle) {
         const items = byBundle.get(row.bundle) ?? [];
         items.push({ oid, off: row.off!, len: row.len! });
@@ -591,6 +608,7 @@ export class ObjectStore {
         item.depth,
       );
       off += item.zdata.length;
+      this.rows.delete(item.oid);
     }
   }
 
