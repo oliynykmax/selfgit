@@ -895,14 +895,18 @@ describe("smart HTTP Git on a Durable Object", () => {
     const atomic = await push("report-status atomic");
     expect(atomic).toContain("unpack ok");
     expect(atomic).toContain("ng refs/heads/side atomic push failed");
-    expect(atomic).toContain("ng refs/heads/main failed to update ref");
+    expect(atomic).toMatch(
+      /ng refs\/heads\/main cannot lock ref 'refs\/heads\/main': is at [0-9a-f]{40} but expected [0-9a-f]{40}/,
+    );
     expect(ok(work, "ls-remote", `${base}/fixture7.git`)).not.toContain(
       "refs/heads/side",
     );
 
     const partial = await push("report-status");
     expect(partial).toContain("ok refs/heads/side");
-    expect(partial).toContain("ng refs/heads/main failed to update ref");
+    expect(partial).toMatch(
+      /ng refs\/heads\/main cannot lock ref 'refs\/heads\/main': is at [0-9a-f]{40} but expected [0-9a-f]{40}/,
+    );
     expect(
       ok(work, "ls-remote", `${base}/fixture7.git`, "refs/heads/side"),
     ).toBe(`${head}\trefs/heads/side`);
