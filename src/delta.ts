@@ -15,12 +15,25 @@ function varint(buf: Buffer, start: number): [value: number, next: number] {
   return [value, pos];
 }
 
-export function applyDelta(base: Buffer, delta: Buffer): Buffer {
+/** The size of the object a delta produces, read from its header. */
+export function deltaResultSize(delta: Buffer): number {
+  const [, afterBase] = varint(delta, 0);
+  return varint(delta, afterBase)[0];
+}
+
+/**
+ * Replays a delta against its base and hands every produced slice to `emit` in order, without
+ * building the result. Slices of the base are passed by reference.
+ */
+export function walkDelta(
+  base: Buffer,
+  delta: Buffer,
+  emit: (slice: Buffer) => void,
+): number {
   const [baseSize, afterBase] = varint(delta, 0);
   const [resultSize, start] = varint(delta, afterBase);
   if (baseSize !== base.length)
     throw new CorruptObject("delta base size mismatch");
-  const out = Buffer.allocUnsafe(resultSize);
   let written = 0;
   let pos = start;
   while (pos < delta.length) {
@@ -35,12 +48,12 @@ export function applyDelta(base: Buffer, delta: Buffer): Buffer {
       if (size === 0) size = 0x10000;
       if (offset + size > base.length || written + size > resultSize)
         throw new CorruptObject("delta copy out of range");
-      base.copy(out, written, offset, offset + size);
+      emit(base.subarray(offset, offset + size));
       written += size;
     } else if (op > 0) {
       if (pos + op > delta.length || written + op > resultSize)
         throw new CorruptObject("delta insert out of range");
-      delta.copy(out, written, pos, pos + op);
+      emit(delta.subarray(pos, pos + op));
       written += op;
       pos += op;
     } else {
@@ -49,5 +62,17 @@ export function applyDelta(base: Buffer, delta: Buffer): Buffer {
   }
   if (written !== resultSize)
     throw new CorruptObject("delta result size mismatch");
+  return resultSize;
+}
+
+export function applyDelta(base: Buffer, delta: Buffer): Buffer {
+  if (varint(delta, 0)[0] !== base.length)
+    throw new CorruptObject("delta base size mismatch");
+  const out = Buffer.allocUnsafe(deltaResultSize(delta));
+  let written = 0;
+  walkDelta(base, delta, (slice) => {
+    slice.copy(out, written);
+    written += slice.length;
+  });
   return out;
 }

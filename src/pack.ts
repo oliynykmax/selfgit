@@ -1,215 +1,9 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { deflateSync, inflateSync } from "node:zlib";
-import {
-  CorruptObject,
-  hashObject,
-  MAX_DELTA_DEPTH,
-  type ObjectStore,
-  type ObjectType,
-  TYPE_CODE,
-  typeFromCode,
-} from "./objects";
-import { applyDelta } from "./delta";
+import { CorruptObject, type ObjectStore, TYPE_CODE } from "./objects";
 
-const OFS_DELTA = 6;
 const REF_DELTA = 7;
 const WINDOW_BYTES = 8 << 20;
-
-interface PendingDelta {
-  offset: number;
-  base: { offset: number } | { oid: string };
-  delta: Buffer;
-  /** The delta's zlib stream exactly as it appeared in the pack. */
-  compressed: Buffer;
-}
-
-/**
- * Inflates one zlib stream starting at `pos` and reports where it ended. The window is bounded by
- * zlib's worst-case expansion so a large pack is not copied once per entry.
- */
-function inflateAt(
-  pack: Buffer,
-  pos: number,
-  end: number,
-  size: number,
-): { data: Buffer; next: number } {
-  const bound = Math.min(end, pos + size + (size >>> 9) + 64);
-  for (const limit of bound < end ? [bound, end] : [end]) {
-    try {
-      const { buffer, engine } = inflateSync(pack.subarray(pos, limit), {
-        info: true,
-      }) as unknown as {
-        buffer: Buffer;
-        engine: { bytesWritten: number };
-      };
-      return { data: buffer, next: pos + engine.bytesWritten };
-    } catch (error) {
-      if (limit === end)
-        throw new CorruptObject(
-          `bad zlib data at ${pos}: ${(error as Error).message}`,
-        );
-    }
-  }
-  throw new CorruptObject("unreachable");
-}
-
-class BaseCache {
-  private readonly entries = new Map<
-    string,
-    { type: ObjectType; content: Buffer }
-  >();
-  private bytes = 0;
-  constructor(
-    private readonly store: ObjectStore,
-    private readonly batch: ReturnType<ObjectStore["batch"]>,
-    private readonly limit = 32 << 20,
-  ) {}
-
-  async get(oid: string): Promise<{ type: ObjectType; content: Buffer }> {
-    const hit = this.entries.get(oid);
-    if (hit) return hit;
-    if (this.batch.has(oid)) await this.batch.flush();
-    const object = await this.store.read(oid);
-    if (!object) throw new CorruptObject(`missing delta base ${oid}`);
-    this.add(oid, object);
-    return object;
-  }
-
-  add(oid: string, object: { type: ObjectType; content: Buffer }): void {
-    this.entries.set(oid, object);
-    this.bytes += object.content.length;
-    for (const [key, value] of this.entries) {
-      if (this.bytes <= this.limit) break;
-      this.entries.delete(key);
-      this.bytes -= value.content.length;
-    }
-  }
-}
-
-/**
- * Stores every object in a received pack, resolving OFS_DELTA and REF_DELTA entries (including thin
- * packs whose bases already live in the store). Returns the ids of objects the store did not have.
- */
-export async function ingestPack(
-  store: ObjectStore,
-  pack: Buffer,
-): Promise<Set<string>> {
-  const added = new Set<string>();
-  if (pack.length === 0) return added;
-  if (pack.length < 32 || pack.toString("latin1", 0, 4) !== "PACK")
-    throw new CorruptObject("bad pack header");
-  const version = pack.readUInt32BE(4);
-  if (version !== 2 && version !== 3)
-    throw new CorruptObject(`unsupported pack version ${version}`);
-  const count = pack.readUInt32BE(8);
-  const end = pack.length - 20;
-  const checksum = createHash("sha1").update(pack.subarray(0, end)).digest();
-  if (!checksum.equals(pack.subarray(end)))
-    throw new CorruptObject("pack checksum mismatch");
-
-  const resolved = new Map<number, string>();
-  const pending: PendingDelta[] = [];
-  const batch = store.batch();
-  const cache = new BaseCache(store, batch);
-  const keep = async (
-    oid: string,
-    type: ObjectType,
-    content: Buffer,
-    zdata: Uint8Array,
-  ) => {
-    if (await batch.put(oid, type, content, zdata)) added.add(oid);
-  };
-  try {
-    let pos = 12;
-    for (let i = 0; i < count; i++) {
-      const offset = pos;
-      if (pos >= end) throw new CorruptObject("pack truncated");
-      let byte = pack[pos++]!;
-      const code = (byte >> 4) & 7;
-      let size = byte & 0x0f;
-      let shift = 4;
-      while (byte & 0x80) {
-        byte = pack[pos++]!;
-        size += (byte & 0x7f) * 2 ** shift;
-        shift += 7;
-      }
-      let base: PendingDelta["base"] | undefined;
-      if (code === OFS_DELTA) {
-        byte = pack[pos++]!;
-        let distance = byte & 0x7f;
-        while (byte & 0x80) {
-          byte = pack[pos++]!;
-          distance = (distance + 1) * 128 + (byte & 0x7f);
-        }
-        base = { offset: offset - distance };
-      } else if (code === REF_DELTA) {
-        base = { oid: pack.toString("hex", pos, pos + 20) };
-        pos += 20;
-      }
-      const { data, next } = inflateAt(pack, pos, end, size);
-      if (data.length !== size)
-        throw new CorruptObject(`object at ${offset} has wrong size`);
-      const type = typeFromCode(code);
-      if (type) {
-        const oid = hashObject(type, data);
-        await keep(oid, type, data, pack.subarray(pos, next));
-        cache.add(oid, { type, content: data });
-        resolved.set(offset, oid);
-      } else if (base) {
-        pending.push({
-          offset,
-          base,
-          delta: data,
-          compressed: pack.subarray(pos, next),
-        });
-      } else {
-        throw new CorruptObject(`invalid object type ${code} at ${offset}`);
-      }
-      pos = next;
-    }
-    if (pos !== end) throw new CorruptObject("pack has trailing data");
-
-    for (let progress = true; pending.length > 0 && progress;) {
-      progress = false;
-      for (let i = 0; i < pending.length;) {
-        const entry = pending[i]!;
-        const baseOid =
-          "offset" in entry.base
-            ? resolved.get(entry.base.offset)
-            : batch.has(entry.base.oid) || (await store.has(entry.base.oid))
-              ? entry.base.oid
-              : undefined;
-        if (!baseOid) {
-          i++;
-          continue;
-        }
-        const base = await cache.get(baseOid);
-        const content = applyDelta(base.content, entry.delta);
-        const oid = hashObject(base.type, content);
-        if (batch.depthOf(baseOid) < MAX_DELTA_DEPTH) {
-          const stored = await batch.putDelta(oid, base.type, content, {
-            base: baseOid,
-            zdata: entry.compressed,
-            size: entry.delta.length,
-          });
-          if (stored) added.add(oid);
-        } else await keep(oid, base.type, content, deflateSync(content));
-        cache.add(oid, { type: base.type, content });
-        resolved.set(entry.offset, oid);
-        pending[i] = pending[pending.length - 1]!;
-        pending.pop();
-        progress = true;
-      }
-    }
-    if (pending.length > 0)
-      throw new CorruptObject(`${pending.length} unresolved deltas`);
-    await batch.flush();
-    return added;
-  } finally {
-    batch.discard();
-  }
-}
 
 function entryHeader(code: number, size: number): Buffer {
   const bytes: number[] = [];
@@ -224,11 +18,26 @@ function entryHeader(code: number, size: number): Buffer {
   return Buffer.from(bytes);
 }
 
-/** Yields a version 2 pack of undeltified objects, copying stored zlib data without recompressing. */
+/** Objects whose stored payload is at least this large are copied from R2 to the client as a stream. */
+const STREAM_OBJECT_BYTES = 4 << 20;
+
+/**
+ * Yields a version 2 pack, copying stored zlib data without recompressing. Objects stored as
+ * deltas go out as deltas, so their bases are added to the pack when the caller did not list them.
+ */
 export async function* writePack(
   store: ObjectStore,
-  oids: string[],
+  requested: string[],
 ): AsyncGenerator<Buffer> {
+  const oids = [...requested];
+  const wanted = new Set(oids);
+  for (let i = 0; i < oids.length; i++) {
+    const base = store.info(oids[i]!)?.base;
+    if (base && !wanted.has(base)) {
+      wanted.add(base);
+      oids.push(base);
+    }
+  }
   const hash = createHash("sha1");
   const emit = (chunk: Buffer) => {
     hash.update(chunk);
@@ -239,7 +48,9 @@ export async function* writePack(
   header.writeUInt32BE(2, 4);
   header.writeUInt32BE(oids.length, 8);
   yield emit(header);
-  const wanted = new Set(oids);
+  const streamed = (oid: string) =>
+    (store.payloadLength(oid) ?? 0) >= STREAM_OBJECT_BYTES &&
+    !store.info(oid)?.base;
   // Objects are read a window at a time, and the next window loads while this one is written.
   const windows: string[][] = [];
   for (let start = 0, bytes = 0, i = 0; i <= oids.length; i++) {
@@ -251,23 +62,26 @@ export async function* writePack(
     }
     bytes += size;
   }
-  let loading = windows[0] ? store.zdataBatch(windows[0]) : undefined;
+  const load = (window: string[]) =>
+    store.zdataBatch(window.filter((oid) => !streamed(oid)));
+  let loading = windows[0] ? load(windows[0]) : undefined;
   for (let w = 0; w < windows.length; w++) {
     const data = await loading!;
-    loading = windows[w + 1] ? store.zdataBatch(windows[w + 1]!) : undefined;
+    loading = windows[w + 1] ? load(windows[w + 1]!) : undefined;
     loading?.catch(() => {});
     for (const oid of windows[w]!) {
       const info = store.info(oid);
       if (!info) throw new CorruptObject(`missing object ${oid}`);
-      if (info.base && wanted.has(info.base)) {
+      if (info.base) {
         yield emit(entryHeader(REF_DELTA, info.deltaSize));
         yield emit(Buffer.from(info.base, "hex"));
         yield emit(data.get(oid)!);
-      } else if (info.base) {
-        const whole = await store.read(oid);
-        if (!whole) throw new CorruptObject(`missing object ${oid}`);
-        yield emit(entryHeader(TYPE_CODE[whole.type], whole.content.length));
-        yield emit(deflateSync(whole.content));
+      } else if (streamed(oid)) {
+        yield emit(entryHeader(TYPE_CODE[info.type], info.size));
+        for await (const chunk of store.streamPayload(oid))
+          yield emit(
+            Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength),
+          );
       } else {
         yield emit(entryHeader(TYPE_CODE[info.type], info.size));
         yield emit(data.get(oid)!);

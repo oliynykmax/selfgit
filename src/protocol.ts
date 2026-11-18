@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
 import { CorruptObject, isOid, type ObjectStore, ZERO_OID } from "./objects";
-import { ingestPack, writePack } from "./pack";
+import { ByteInput } from "./byte-input";
+import { ingestPack } from "./ingest";
+import { writePack } from "./pack";
 import {
   FLUSH,
   PktReader,
@@ -413,13 +415,17 @@ class MissingObjects extends Error {}
 export async function receivePack(
   store: ObjectStore,
   transaction: (fn: () => void) => void,
-  body: Buffer,
+  body: Buffer | ReadableStream<Uint8Array>,
   onUpdate?: (ref: string, oid: string) => void,
 ): Promise<Buffer> {
-  const reader = new PktReader(body);
+  const input = new ByteInput(body);
   const commands: Command[] = [];
   let caps = new Set<string>();
-  for (let payload = reader.read(); payload !== null; payload = reader.read()) {
+  for (
+    let payload = await input.readPkt();
+    payload !== null;
+    payload = await input.readPkt()
+  ) {
     const nul = payload.indexOf(0);
     const line = payload
       .toString("latin1", 0, nul === -1 ? payload.length : nul)
@@ -442,7 +448,7 @@ export async function receivePack(
   let unpack = "ok";
   try {
     if (commands.some((command) => command.new !== ZERO_OID))
-      await ingestPack(store, reader.rest());
+      await ingestPack(store, input);
     const checked = new Set<string>();
     const pending = commands
       .filter((command) => command.new !== ZERO_OID)

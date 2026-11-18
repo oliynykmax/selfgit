@@ -25,12 +25,20 @@ const NO_CACHE = {
   Expires: "Fri, 01 Jan 1980 00:00:00 GMT",
 };
 
-async function readBody(request: Request): Promise<Buffer> {
-  let body = request.body ?? new ReadableStream();
+function bodyStream(request: Request): ReadableStream<Uint8Array> {
+  const body =
+    request.body ??
+    new ReadableStream<Uint8Array>({
+      start: (controller) => controller.close(),
+    });
   const encoding = request.headers.get("Content-Encoding")?.toLowerCase();
-  if (encoding === "gzip" || encoding === "x-gzip")
-    body = body.pipeThrough(new DecompressionStream("gzip"));
-  return Buffer.from(await new Response(body).arrayBuffer());
+  return encoding === "gzip" || encoding === "x-gzip"
+    ? body.pipeThrough(new DecompressionStream("gzip"))
+    : body;
+}
+
+async function readBody(request: Request): Promise<Buffer> {
+  return Buffer.from(await new Response(bodyStream(request)).arrayBuffer());
 }
 
 export type Result<T> =
@@ -158,14 +166,13 @@ export class Repository extends DurableObject<Env> {
           },
         });
       }
-      const body = await readBody(request);
       const result =
         service === "git-upload-pack"
-          ? await uploadPack(this.store, body)
+          ? await uploadPack(this.store, await readBody(request))
           : await receivePack(
               this.store,
               (fn) => this.ctx.storage.transactionSync(fn),
-              body,
+              bodyStream(request),
               (ref, oid) => {
                 const name = url.pathname.split("/")[1]?.replace(/\.git$/, "");
                 if (name === PIPELINE_REPO && ref === MAIN) {

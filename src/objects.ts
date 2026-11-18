@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
+import { BundleUpload } from "./bundle-upload";
 import { applyDelta } from "./delta";
 
 export const OBJECT_TYPES = ["commit", "tree", "blob", "tag"] as const;
@@ -141,6 +142,8 @@ interface Staged {
   base: string | null;
   dsize: number | null;
   depth: number;
+  /** Set when the payload is already in R2 at this key, starting at offset 0. */
+  stored?: { key: string; length: number };
 }
 
 interface Placement extends Record<string, SqlStorageValue> {
@@ -368,6 +371,49 @@ export class ObjectStore {
     return object ? Buffer.from(await object.arrayBuffer()) : null;
   }
 
+  startUpload(): BundleUpload {
+    return new BundleUpload(
+      this.bucket,
+      `${this.repoId}/pack-${crypto.randomUUID()}`,
+    );
+  }
+
+  /** Length of the stored payload when it lives in R2, which tells a caller whether to stream it. */
+  payloadLength(oid: string): number | null {
+    const place = this.lookup(oid)?.place;
+    return place?.in_r2 ? (place.len ?? this.info(oid)!.size) : null;
+  }
+
+  /**
+   * Streams the stored bytes of an object straight from R2, one chunk at a time. Unlike zdata it
+   * does not check the content hash, which would need the whole object in memory.
+   */
+  async *streamPayload(oid: string): AsyncGenerator<Uint8Array> {
+    const entry = this.lookup(oid);
+    if (!entry) throw new CorruptObject(`missing object ${oid}`);
+    const { place } = entry;
+    if (!place.in_r2) {
+      yield await this.zdata(oid);
+      return;
+    }
+    const object = place.bundle
+      ? await this.bucket.get(place.bundle, {
+          range: { offset: place.off!, length: place.len! },
+        })
+      : await this.bucket.get(this.key(oid));
+    if (!object) throw new CorruptObject(`missing R2 object ${oid}`);
+    const reader = object.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        yield value;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   /**
    * Reads many objects at once. Objects that share a bundle and sit close together come back from
    * one range request, so the cost is a few round trips instead of one per object.
@@ -518,7 +564,10 @@ export class ObjectStore {
     let bytes = 0;
     const depthOf = (oid: string) =>
       staged.get(oid)?.depth ?? this.info(oid)?.depth ?? 0;
+    const sizeOf = (oid: string) =>
+      staged.get(oid)?.size ?? this.info(oid)?.size ?? 0;
     const stage = async (item: Staged): Promise<boolean> => {
+      if (item.zdata.length >= BUNDLE_BYTES && staged.size > 0) await flush();
       staged.set(item.oid, item);
       bytes += item.zdata.length;
       if (bytes >= BUNDLE_BYTES) await flush();
@@ -573,7 +622,66 @@ export class ObjectStore {
           depth: depthOf(delta.base) + 1,
         });
       },
+      /** Stores a blob whose content was hashed while it streamed past and is not held in memory. */
+      putBlob: async (
+        oid: string,
+        size: number,
+        zdata: Uint8Array,
+      ): Promise<boolean> => {
+        if (staged.has(oid) || (await this.has(oid))) return false;
+        return stage({
+          oid,
+          type: TYPE_CODE.blob,
+          size,
+          links: "",
+          zdata,
+          base: null,
+          dsize: null,
+          depth: 0,
+        });
+      },
+      /** Stores a blob delta whose result was hashed without being built. */
+      putBlobDelta: async (
+        oid: string,
+        size: number,
+        delta: { base: string; zdata: Uint8Array; size: number },
+      ): Promise<boolean> => {
+        if (staged.has(oid) || (await this.has(oid))) return false;
+        return stage({
+          oid,
+          type: TYPE_CODE.blob,
+          size,
+          links: "",
+          zdata: delta.zdata,
+          base: delta.base,
+          dsize: delta.size,
+          depth: depthOf(delta.base) + 1,
+        });
+      },
+      /** Registers a blob that streamed into R2 as its own object. */
+      putUploaded: async (
+        oid: string,
+        size: number,
+        stored: { key: string; length: number },
+      ): Promise<boolean> => {
+        if (staged.has(oid) || (await this.has(oid))) {
+          await this.bucket.delete(stored.key);
+          return false;
+        }
+        return stage({
+          oid,
+          type: TYPE_CODE.blob,
+          size,
+          links: "",
+          zdata: new Uint8Array(0),
+          base: null,
+          dsize: null,
+          depth: 0,
+          stored,
+        });
+      },
       depthOf,
+      sizeOf,
       flush,
       /** True while the object is held in memory and not yet readable from the store. */
       has: (oid: string) => staged.has(oid),
@@ -585,10 +693,19 @@ export class ObjectStore {
   }
 
   private async commit(items: Staged[]): Promise<void> {
-    const bundle = Buffer.concat(items.map((item) => item.zdata));
-    const key = `${this.repoId}/pack-${createHash("sha1").update(bundle).digest("hex")}`;
-    await this.bucket.put(key, bundle);
-    this.verifiedBundles.add(key);
+    const inline = items.filter((item) => !item.stored);
+    let key = "";
+    if (inline.length > 0) {
+      const bundle =
+        inline.length === 1
+          ? inline[0]!.zdata
+          : Buffer.concat(inline.map((item) => item.zdata));
+      key = `${this.repoId}/pack-${createHash("sha1").update(bundle).digest("hex")}`;
+      await this.bucket.put(key, bundle);
+      this.verifiedBundles.add(key);
+    }
+    for (const item of items)
+      if (item.stored) this.verifiedBundles.add(item.stored.key);
     let off = 0;
     for (const item of items) {
       this.sql.exec(
@@ -600,14 +717,14 @@ export class ObjectStore {
         item.type,
         item.size,
         item.links,
-        key,
-        off,
-        item.zdata.length,
+        item.stored?.key ?? key,
+        item.stored ? 0 : off,
+        item.stored?.length ?? item.zdata.length,
         item.base,
         item.dsize,
         item.depth,
       );
-      off += item.zdata.length;
+      if (!item.stored) off += item.zdata.length;
       this.rows.delete(item.oid);
     }
   }
