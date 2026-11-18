@@ -19,6 +19,7 @@ import type {
 import { ClonePopover, cloneUrl } from "@/components/clone-popover";
 import { CommitRow } from "@/components/commit-row";
 import { Link } from "@/components/link";
+import { CodeFile } from "@/components/pierre";
 import { RefPicker } from "@/components/ref-picker";
 import { LoadingRows, Problem } from "@/components/states";
 import { Time } from "@/components/time";
@@ -509,30 +510,6 @@ export function TreePage({
   );
 }
 
-function CodeLines({ text }: { text: string }) {
-  const lines = text.endsWith("\n")
-    ? text.slice(0, -1).split("\n")
-    : text.split("\n");
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse font-mono text-[0.8rem] leading-5">
-        <tbody>
-          {lines.map((line, index) => (
-            <tr key={index} id={`L${index + 1}`} className="target:bg-amber-50">
-              <td className="w-px border-r px-3 text-right align-top text-muted-foreground select-none">
-                <a href={`#L${index + 1}`} className="hover:text-foreground">
-                  {index + 1}
-                </a>
-              </td>
-              <td className="px-4 whitespace-pre">{line}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function BlobBody({
   repo,
   gitRef,
@@ -558,7 +535,11 @@ function BlobBody({
           />
         </div>
       ) : (
-        <CodeLines text={blob.content.text} />
+        <CodeFile
+          name={blob.path}
+          contents={blob.content.text}
+          cacheKey={blob.oid}
+        />
       );
     case "image":
       return (
