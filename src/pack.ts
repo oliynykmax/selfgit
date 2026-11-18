@@ -12,6 +12,7 @@ import {
 
 const OFS_DELTA = 6;
 const REF_DELTA = 7;
+const PREFETCH_OBJECTS = 16;
 
 interface PendingDelta {
   offset: number;
@@ -265,11 +266,23 @@ export async function* writePack(
   header.writeUInt32BE(2, 4);
   header.writeUInt32BE(oids.length, 8);
   yield emit(header);
+  // Each zdata() is an R2 round trip, so reading one object at a time makes a clone cost one
+  // round trip per object. Keep a window of reads in flight and consume them in order.
+  const inflight: Promise<Buffer>[] = [];
+  let next = 0;
+  const prefetch = () => {
+    while (next < oids.length && inflight.length < PREFETCH_OBJECTS) {
+      const read = store.zdata(oids[next++]!);
+      read.catch(() => {});
+      inflight.push(read);
+    }
+  };
   for (const oid of oids) {
     const info = store.info(oid);
     if (!info) throw new CorruptObject(`missing object ${oid}`);
+    prefetch();
     yield emit(entryHeader(info.type, info.size));
-    yield emit(await store.zdata(oid));
+    yield emit(await inflight.shift()!);
   }
   yield hash.digest();
 }
