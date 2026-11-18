@@ -151,8 +151,10 @@ async function streamBlob(
   const engine = inflate as unknown as { bytesWritten: number };
   try {
     for (;;) {
-      if (!(await input.fill(1))) throw new CorruptObject("pack truncated");
+      // Request bodies arrive in chunks of about 4 KB, so gather a full step before each write.
+      await input.fill(STREAM_STEP);
       const window = input.window;
+      if (window.length === 0) throw new CorruptObject("pack truncated");
       const slice = window.subarray(0, Math.min(window.length, STREAM_STEP));
       const before = engine.bytesWritten;
       await Promise.race([
