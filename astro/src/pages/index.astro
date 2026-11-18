@@ -1,0 +1,25 @@
+---
+const repo = "selfgit";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>selfgit Astro preview</title>
+    <style>
+      :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      body { display: grid; min-height: 100vh; margin: 0; place-items: center; background: #f8fafc; color: #172033; }
+      main { width: min(100% - 2rem, 42rem); padding: 2rem; border: 1px solid #d8dee9; border-radius: .75rem; background: #fff; }
+      a { color: #3730a3; font-weight: 700; }
+      @media (prefers-color-scheme: dark) { body { background: #0f172a; color: #e2e8f0; } main { border-color: #334155; background: #162033; } a { color: #c4b5fd; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p>Astro server-rendering preview for selfgit.</p>
+      <a href={`/${repo}`}>Open the {repo} file tree →</a>
+    </main>
+  </body>
+</html>
