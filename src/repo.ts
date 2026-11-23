@@ -227,7 +227,9 @@ export class Repository extends DurableObject<Env> {
     return !this.deleted() && this.ci.heartbeat(id, token, Date.now());
   }
   ciFinish(id: number, token: string, success: boolean) {
-    return !this.deleted() && this.ci.finish(id, token, success, Date.now());
+    return this.ctx.storage.transactionSync(
+      () => !this.deleted() && this.ci.finish(id, token, success, Date.now()),
+    );
   }
   ciRun(id: number) {
     return this.deleted() ? null : this.ci.run(id);

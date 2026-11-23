@@ -32,12 +32,8 @@ def request(endpoint, body):
         return json.load(response)
 
 
-def execute(job):
-    if job.get('kind') != 'ci' or not re.fullmatch(r'[0-9a-f]{40}', job.get('commit', '')):
-        raise ValueError('Invalid CI job')
-    lease = {'id': job['id'], 'leaseToken': job['leaseToken']}
-    script = '''set -eu
-export HOME=/tmp/home TMPDIR=/tmp BUN_INSTALL_CACHE_DIR=/cache
+PRELUDE = '''set -eu
+export HOME=/tmp/home TMPDIR=/tmp BUN_INSTALL_CACHE_DIR=/cache WRANGLER_SEND_METRICS=false
 mkdir -p "$HOME" /tmp/work
 cd /tmp/work
 git init -q
@@ -47,15 +43,46 @@ git checkout --detach FETCH_HEAD
 test "$(git rev-parse HEAD)" = "$1"
 run() { printf '\\n$ %s\\n' "$1"; sh -c "$1"; }
 run 'bun install --frozen-lockfile'
-run 'bun run ci'
 '''
+SCRIPTS = {
+    'ci': PRELUDE + "run 'bun run ci'\n",
+    # Wrangler reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the container environment.
+    'deploy': PRELUDE + "run 'bun run deploy'\n",
+}
+
+
+def cloudflare_token():
+    """The deploy credential, or None when this runner is not set up to deploy."""
+    path = os.environ.get('SELFGIT_CI_CLOUDFLARE_TOKEN_FILE')
+    account = os.environ.get('SELFGIT_CI_CLOUDFLARE_ACCOUNT_ID')
+    if not path or not account or not os.path.exists(path):
+        return None
+    return open(path, encoding='utf-8').read().strip() or None
+
+
+def execute(job):
+    if job.get('kind') not in SCRIPTS or not re.fullmatch(r'[0-9a-f]{40}', job.get('commit', '')):
+        raise ValueError('Invalid CI job')
+    secrets = [TOKEN, job['leaseToken']]
+    env = None
+    env_args = []
+    if job['kind'] == 'deploy':
+        deploy_token = cloudflare_token()
+        if not deploy_token:
+            raise ValueError('Deploy credential is not configured')
+        secrets.append(deploy_token)
+        # Values go through the environment, never the command line.
+        env = {**os.environ, 'CLOUDFLARE_API_TOKEN': deploy_token}
+        env_args = ['--env', 'CLOUDFLARE_API_TOKEN', '--env', 'CLOUDFLARE_ACCOUNT_ID=' + os.environ['SELFGIT_CI_CLOUDFLARE_ACCOUNT_ID']]
+    lease = {'id': job['id'], 'leaseToken': job['leaseToken']}
+    script = SCRIPTS[job['kind']]
     workspace = tempfile.TemporaryDirectory(prefix='job-', dir=os.environ.get('SELFGIT_CI_WORKDIR', os.path.expanduser('~/ci-work')))
     cache = os.environ.get('SELFGIT_CI_CACHE', os.path.expanduser('~/ci-cache'))
     os.makedirs(cache, exist_ok=True)
     cmd = ['podman', 'run', '--rm', '--name', 'selfgit-ci-%s' % job['id'], '--memory', MEMORY, '--memory-swap', MEMORY,
-           '--cpus', CPUS, '--pids-limit', '512', '--volume', workspace.name + ':/tmp:Z', '--volume', cache + ':/cache:Z',
+           '--cpus', CPUS, '--pids-limit', '512', *env_args, '--volume', workspace.name + ':/tmp:Z', '--volume', cache + ':/cache:Z',
            IMAGE, 'sh', '-c', script, 'ci', job['commit']]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, env=env)
     selector = selectors.DefaultSelector()
     selector.register(proc.stdout, selectors.EVENT_READ)
     start = time.monotonic()
@@ -67,11 +94,13 @@ run 'bun run ci'
     next_stream = start + STREAM_INTERVAL
     lease_valid = True
     # A secret split across two reads must not leak, so hold back the tail until the output completes.
-    hold = max(len(TOKEN), len(job['leaseToken']))
+    hold = max(len(secret) for secret in secrets)
 
     def stream(final=False):
         nonlocal sent, lease_valid
-        clean = text.replace(TOKEN, '[redacted]').replace(job['leaseToken'], '[redacted]')
+        clean = text
+        for secret in secrets:
+            clean = clean.replace(secret, '[redacted]')
         end = len(clean) if final else max(sent, len(clean) - hold)
         for offset in range(sent, end, 1024):
             if not request('log', {**lease, 'text': clean[offset:min(offset + 1024, end)]}).get('ok'):
@@ -127,6 +156,8 @@ def main():
     while True:
         try:
             job = request('claim', {'kind': 'ci'})
+            if not job and cloudflare_token():
+                job = request('claim', {'kind': 'deploy'})
             if job:
                 execute(job)
             else:

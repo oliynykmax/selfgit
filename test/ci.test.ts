@@ -81,3 +81,71 @@ test("a single run carries its log and unknown ids are null", () => {
   expect(queue.run(999)).toBeNull();
   db.close();
 });
+
+function queueOn(db: Database) {
+  const sql = {
+    exec(query: string, ...args: unknown[]) {
+      const rows = db.query(query).all(...(args as never[]));
+      return { toArray: () => rows, one: () => rows[0] };
+    },
+  } as unknown as SqlStorage;
+  db.run("CREATE TABLE refs (name TEXT PRIMARY KEY, oid TEXT NOT NULL)");
+  db.run("INSERT INTO refs VALUES ('refs/heads/main', 'abc')");
+  return new CiQueue(sql);
+}
+
+const states = (queue: CiQueue, kind: string) =>
+  queue
+    .runs()
+    .filter((row) => row.kind === kind)
+    .map((row) => `${row.commit_oid}:${row.state}`);
+
+test("a passing CI run on main's head queues one deploy; failures do not", () => {
+  const db = new Database(":memory:");
+  const queue = queueOn(db);
+  queue.enqueue("abc");
+  const failing = queue.claim("ci", 1000)!;
+  queue.finish(failing.id, failing.leaseToken, false, 1001);
+  expect(states(queue, "deploy")).toEqual([]);
+  queue.enqueue("abc");
+  const passing = queue.claim("ci", 2000)!;
+  queue.finish(passing.id, passing.leaseToken, true, 2001);
+  expect(states(queue, "deploy")).toEqual(["abc:queued"]);
+  const deploy = queue.claim("deploy", 2002)!;
+  expect(deploy.commit).toBe("abc");
+  expect(queue.claim("deploy", 2003)).toBeNull();
+  queue.finish(deploy.id, deploy.leaseToken, true, 2004);
+  expect(states(queue, "deploy")).toEqual(["abc:succeeded"]);
+  db.close();
+});
+
+test("a CI pass for an old commit queues no deploy", () => {
+  const db = new Database(":memory:");
+  const queue = queueOn(db);
+  queue.enqueue("abc");
+  const job = queue.claim("ci", 1000)!;
+  db.run("UPDATE refs SET oid = 'def' WHERE name = 'refs/heads/main'");
+  queue.finish(job.id, job.leaseToken, true, 1001);
+  expect(states(queue, "deploy")).toEqual([]);
+  db.close();
+});
+
+test("a waiting deploy goes stale on a new head but a running one is kept", () => {
+  const db = new Database(":memory:");
+  const queue = queueOn(db);
+  queue.enqueue("abc");
+  const ci = queue.claim("ci", 1000)!;
+  queue.finish(ci.id, ci.leaseToken, true, 1001);
+  const running = queue.claim("deploy", 1002)!;
+  db.run("UPDATE refs SET oid = 'def' WHERE name = 'refs/heads/main'");
+  queue.enqueue("def");
+  expect(queue.claim("deploy", 1003)).toBeNull();
+  expect(queue.finish(running.id, running.leaseToken, true, 1004)).toBe(true);
+  expect(states(queue, "deploy")).toEqual(["abc:succeeded"]);
+  const next = queue.claim("ci", 1005)!;
+  queue.finish(next.id, next.leaseToken, true, 1006);
+  db.run("UPDATE refs SET oid = 'ghi' WHERE name = 'refs/heads/main'");
+  expect(queue.claim("deploy", 1007)).toBeNull();
+  expect(states(queue, "deploy")).toEqual(["def:superseded", "abc:succeeded"]);
+  db.close();
+});

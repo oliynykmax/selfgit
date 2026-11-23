@@ -1,7 +1,7 @@
 import { PIPELINE_REPO } from "./api-types";
 export { PIPELINE_REPO };
 export const MAIN = "refs/heads/main";
-export type JobKind = "ci" | "backup";
+export type JobKind = "ci" | "backup" | "deploy";
 export type Job = {
   id: number;
   kind: JobKind;
@@ -24,7 +24,7 @@ export class CiQueue {
   }
   enqueue(oid: string) {
     this.sql.exec(
-      "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE kind = 'ci' AND state IN ('queued', 'leased')",
+      "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE (kind = 'ci' AND state IN ('queued', 'leased')) OR (kind = 'deploy' AND state = 'queued')",
       Date.now(),
     );
     for (const kind of ["ci", "backup"])
@@ -41,10 +41,12 @@ export class CiQueue {
       kind,
       now,
     );
-    if (kind === "ci")
+    // A deploy that already started must finish; only waiting ones go stale.
+    if (kind === "ci" || kind === "deploy")
       this.sql.exec(
-        "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE kind = 'ci' AND state IN ('queued', 'leased') AND commit_oid != coalesce((SELECT oid FROM refs WHERE name = 'refs/heads/main'), '')",
+        "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE kind = ? AND (state = 'queued' OR (state = 'leased' AND kind = 'ci')) AND commit_oid != coalesce((SELECT oid FROM refs WHERE name = 'refs/heads/main'), '')",
         now,
+        kind,
       );
     if (
       this.sql
@@ -107,7 +109,16 @@ export class CiQueue {
       token,
       now,
     );
-    return this.sql.exec<{ n: number }>("SELECT changes() AS n").one().n === 1;
+    const finished =
+      this.sql.exec<{ n: number }>("SELECT changes() AS n").one().n === 1;
+    // Only a CI pass on the commit that is still main's head earns a deploy.
+    if (finished)
+      this.sql.exec(
+        "INSERT INTO ci_jobs (kind, commit_oid, state, created_at) SELECT 'deploy', commit_oid, 'queued', ? FROM ci_jobs WHERE id = ? AND kind = 'ci' AND state = 'succeeded'",
+        now,
+        id,
+      );
+    return finished;
   }
   run(id: number) {
     return (
