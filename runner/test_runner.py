@@ -45,6 +45,26 @@ class RunnerTest(unittest.TestCase):
             self.assertIn('heartbeat', calls)
             self.assertEqual(calls[-1], 'finish')
 
+    def test_podman_backend_limits_and_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            podman = Path(directory) / 'podman'
+            podman.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$SELFGIT_ARGS"\n')
+            podman.chmod(0o755)
+            args = Path(directory) / 'args'
+            calls = []
+            def request(endpoint, body):
+                calls.append(endpoint)
+                return {'ok': True}
+            env = {'PATH': directory + ':' + os.environ['PATH'], 'SELFGIT_CI_WORKDIR': directory, 'SELFGIT_ARGS': str(args)}
+            with patch.dict(os.environ, env), patch.object(runner, 'BACKEND', 'podman'), patch.object(runner, 'request', request):
+                runner.execute({'id': 7, 'kind': 'ci', 'commit': 'c' * 40, 'leaseToken': 'lease'})
+            lines = args.read_text().split('\n')
+            self.assertEqual(lines[:2], ['run', '--rm'])
+            self.assertIn('selfgit-ci-7', lines)
+            self.assertIn('1536m', lines)
+            self.assertIn('stock-workerd', lines)
+            self.assertEqual(calls[-1], 'finish')
+
     def test_rejects_other_kinds(self):
         with self.assertRaises(ValueError):
             runner.execute({'kind': 'backup', 'commit': 'a' * 40})
