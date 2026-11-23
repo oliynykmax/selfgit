@@ -252,6 +252,16 @@ export async function handleApi(context: ApiContext): Promise<Response> {
       method === "GET"
     )
       return json(await stub(env, name).ciRuns());
+    if (
+      name === PIPELINE_REPO &&
+      parts.length === 4 &&
+      parts[2] === "runs" &&
+      /^[1-9][0-9]{0,15}$/.test(parts[3]!) &&
+      method === "GET"
+    ) {
+      const run = await stub(env, name).ciRun(Number(parts[3]));
+      return run ? json(run) : error(404, "No such run");
+    }
     const [section = "", ...rest] = parts.slice(2);
     const route = REPO_ROUTES[section];
     if (!route || rest.length > (section === "commits" ? 1 : 0))

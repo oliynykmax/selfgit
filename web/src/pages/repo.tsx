@@ -1,4 +1,8 @@
-import type { RepoName, RepoRefs } from "../../../src/api-types";
+import {
+  PIPELINE_REPO,
+  type RepoName,
+  type RepoRefs,
+} from "../../../src/api-types";
 import { Link } from "@/components/link";
 import { Problem } from "@/components/states";
 import { useApi } from "@/lib/api";
@@ -6,6 +10,7 @@ import { apiUrl, href, type RepoTab, type Route, tabOf } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { BlobPage, TreePage } from "./code";
 import { CommitPage } from "./commit";
+import { ActionsPage, RunPage } from "./actions";
 import { CommitsPage } from "./commits";
 import { RefsPage } from "./refs";
 
@@ -42,6 +47,8 @@ function Tabs({
       count: refs?.tags.length,
     },
   ];
+  if (repo === PIPELINE_REPO)
+    tabs.push({ id: "actions", label: "Actions", to: href.actions(repo) });
   return (
     <nav aria-label="Repository" className="-mb-px flex gap-1 overflow-x-auto">
       {tabs.map((tab) => (
@@ -108,5 +115,9 @@ function RepoView({ route, refs }: { route: RepoRoute; refs: RepoRefs }) {
       return <RefsPage repo={route.repo} refs={refs} kind="branch" />;
     case "tags":
       return <RefsPage repo={route.repo} refs={refs} kind="tag" />;
+    case "actions":
+      return <ActionsPage repo={route.repo} />;
+    case "run":
+      return <RunPage repo={route.repo} id={route.id} />;
   }
 }

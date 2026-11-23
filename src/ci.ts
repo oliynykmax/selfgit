@@ -1,4 +1,5 @@
-export const PIPELINE_REPO = "selfgit";
+import { PIPELINE_REPO } from "./api-types";
+export { PIPELINE_REPO };
 export const MAIN = "refs/heads/main";
 export type JobKind = "ci" | "backup";
 export type Job = {
@@ -107,6 +108,16 @@ export class CiQueue {
       now,
     );
     return this.sql.exec<{ n: number }>("SELECT changes() AS n").one().n === 1;
+  }
+  run(id: number) {
+    return (
+      this.sql
+        .exec(
+          "SELECT id, kind, commit_oid, state, created_at, finished_at, log FROM ci_jobs WHERE id = ?",
+          id,
+        )
+        .toArray()[0] ?? null
+    );
   }
   runs() {
     return this.sql

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Single-job selfgit CI worker. Each job runs in a rootless Podman container that never sees runner credentials."""
+import codecs
 import json
 import os
 import re
@@ -19,6 +20,7 @@ CPUS = os.environ.get('SELFGIT_CI_CPUS', '1')
 TIMEOUT = 1200
 LOG_LIMIT = 60000
 HEARTBEAT_INTERVAL = 60
+STREAM_INTERVAL = 3
 
 
 def request(endpoint, body):
@@ -58,8 +60,26 @@ run 'bun run ci'
     selector.register(proc.stdout, selectors.EVENT_READ)
     start = time.monotonic()
     heartbeat = start + HEARTBEAT_INTERVAL
-    output = bytearray()
+    decoder = codecs.getincrementaldecoder('utf-8')('replace')
+    raw = 0
+    text = ''
+    sent = 0
+    next_stream = start + STREAM_INTERVAL
     lease_valid = True
+    # A secret split across two reads must not leak, so hold back the tail until the output completes.
+    hold = max(len(TOKEN), len(job['leaseToken']))
+
+    def stream(final=False):
+        nonlocal sent, lease_valid
+        clean = text.replace(TOKEN, '[redacted]').replace(job['leaseToken'], '[redacted]')
+        end = len(clean) if final else max(sent, len(clean) - hold)
+        for offset in range(sent, end, 1024):
+            if not request('log', {**lease, 'text': clean[offset:min(offset + 1024, end)]}).get('ok'):
+                lease_valid = False
+                raise RuntimeError('Lease lost')
+        print(clean[sent:end], end='', flush=True)
+        sent = end
+
     try:
         while selector.get_map():
             now = time.monotonic()
@@ -70,18 +90,19 @@ run 'bun run ci'
                     lease_valid = False
                     raise RuntimeError('Lease lost')
                 heartbeat = now + HEARTBEAT_INTERVAL
+            if now >= next_stream:
+                stream()
+                next_stream = now + STREAM_INTERVAL
             for key, _ in selector.select(timeout=1):
                 data = os.read(key.fd, 2048)
                 if not data:
                     selector.unregister(key.fileobj)
                     continue
-                output.extend(data[:max(0, LOG_LIMIT - len(output))])
-        text = output.decode('utf-8', 'replace').replace(TOKEN, '[redacted]').replace(job['leaseToken'], '[redacted]')
-        print(text, end='', flush=True)
-        for offset in range(0, len(text), 1024):
-            if not request('log', {**lease, 'text': text[offset:offset + 1024]}).get('ok'):
-                lease_valid = False
-                raise RuntimeError('Lease lost')
+                data = data[:max(0, LOG_LIMIT - raw)]
+                raw += len(data)
+                text += decoder.decode(data)
+        text += decoder.decode(b'', final=True)
+        stream(final=True)
         success = proc.wait() == 0
         if lease_valid and not request('finish', {**lease, 'success': success}).get('ok'):
             raise RuntimeError('Finish rejected')

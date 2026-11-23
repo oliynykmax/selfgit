@@ -1,6 +1,10 @@
-import { isRepoName, type RepoName } from "../../../src/api-types";
+import {
+  isRepoName,
+  PIPELINE_REPO,
+  type RepoName,
+} from "../../../src/api-types";
 
-export type RepoTab = "code" | "commits" | "branches" | "tags";
+export type RepoTab = "code" | "commits" | "branches" | "tags" | "actions";
 
 export type Route =
   | { kind: "home" }
@@ -10,6 +14,8 @@ export type Route =
   | { kind: "commit"; repo: RepoName; oid: string }
   | { kind: "branches"; repo: RepoName }
   | { kind: "tags"; repo: RepoName }
+  | { kind: "actions"; repo: RepoName }
+  | { kind: "run"; repo: RepoName; id: number }
   | { kind: "not-found" };
 
 const OID = /^[0-9a-f]{40}$/;
@@ -44,6 +50,13 @@ export function parseRoute(pathname: string): Route {
       return rest.length === 0
         ? { kind: section, repo }
         : { kind: "not-found" };
+    case "actions":
+      if (repo !== PIPELINE_REPO || rest.length > 1)
+        return { kind: "not-found" };
+      if (rest.length === 0) return { kind: "actions", repo };
+      return /^[1-9][0-9]{0,15}$/.test(rest[0]!)
+        ? { kind: "run", repo, id: Number(rest[0]) }
+        : { kind: "not-found" };
     default:
       return { kind: "not-found" };
   }
@@ -61,6 +74,9 @@ export function tabOf(route: Route): RepoTab | null {
       return "branches";
     case "tags":
       return "tags";
+    case "actions":
+    case "run":
+      return "actions";
     default:
       return null;
   }
@@ -104,6 +120,8 @@ export const href = {
   commit: (repo: RepoName, oid: string) => join(repo, "commit", oid),
   branches: (repo: RepoName) => join(repo, "branches"),
   tags: (repo: RepoName) => join(repo, "tags"),
+  actions: (repo: RepoName) => join(repo, "actions"),
+  run: (repo: RepoName, id: number) => join(repo, "actions", String(id)),
 };
 
 export function apiUrl(
