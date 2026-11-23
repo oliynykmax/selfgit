@@ -1,0 +1,5 @@
+# Guest image for the Podman backend (aarch64): podman build -t selfgit-ci runner
+FROM docker.io/library/debian:bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive
+COPY setup-guest.sh /tmp/setup-guest.sh
+RUN sh /tmp/setup-guest.sh && rm /tmp/setup-guest.sh && apt-get clean && rm -rf /var/lib/apt/lists/*
