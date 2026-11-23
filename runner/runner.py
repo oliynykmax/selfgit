@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-job selfgit CI worker. Jobs run in an isolated guest (proot Debian on Termux, or a rootless Podman container) that never sees runner credentials."""
+"""Single-job selfgit CI worker. Each job runs in a rootless Podman container that never sees runner credentials."""
 import json
 import os
 import re
@@ -13,12 +13,9 @@ import urllib.request
 
 API = os.environ.get('SELFGIT_CI_API', 'https://git.oliinyk.dev')
 TOKEN = open(os.environ['SELFGIT_CI_TOKEN_FILE'], encoding='utf-8').read().strip()
-DISTRO = os.environ.get('SELFGIT_CI_DISTRO', 'debian')
-BACKEND = os.environ.get('SELFGIT_CI_BACKEND', 'proot')
 IMAGE = os.environ.get('SELFGIT_CI_IMAGE', 'localhost/selfgit-ci:latest')
 MEMORY = os.environ.get('SELFGIT_CI_MEMORY', '1536m')
 CPUS = os.environ.get('SELFGIT_CI_CPUS', '1')
-WORKERD_RELEASES = 'https://github.com/oliynykmax/workerd-arm64-39bit/releases/download'
 TIMEOUT = 1200
 LOG_LIMIT = 60000
 HEARTBEAT_INTERVAL = 60
@@ -47,24 +44,15 @@ git fetch --depth=1 origin "$1"
 git checkout --detach FETCH_HEAD
 test "$(git rev-parse HEAD)" = "$1"
 run() { printf '\\n$ %s\\n' "$1"; sh -c "$1"; }
-run 'bun install --frozen-lockfile --backend=copyfile'
-if [ "$3" = patched-workerd ]; then
-  export MINIFLARE_WORKERD_PATH="/opt/workerd/$(node -p 'require("workerd/package.json").version')"
-  test -x "$MINIFLARE_WORKERD_PATH" || run "curl -fsSL $2/v${MINIFLARE_WORKERD_PATH##*/}/workerd.gz | gunzip > $MINIFLARE_WORKERD_PATH.part && chmod 755 $MINIFLARE_WORKERD_PATH.part && mv $MINIFLARE_WORKERD_PATH.part $MINIFLARE_WORKERD_PATH"
-fi
+run 'bun install --frozen-lockfile'
 run 'bun run ci'
 '''
     workspace = tempfile.TemporaryDirectory(prefix='job-', dir=os.environ.get('SELFGIT_CI_WORKDIR', os.path.expanduser('~/ci-work')))
     cache = os.environ.get('SELFGIT_CI_CACHE', os.path.expanduser('~/ci-cache'))
     os.makedirs(cache, exist_ok=True)
-    if BACKEND == 'podman':
-        # Stock workerd runs on 48-bit kernels; only Android needs the patched build.
-        cmd = ['podman', 'run', '--rm', '--name', 'selfgit-ci-%s' % job['id'], '--memory', MEMORY, '--memory-swap', MEMORY,
-               '--cpus', CPUS, '--pids-limit', '512', '--volume', workspace.name + ':/tmp:Z', '--volume', cache + ':/cache:Z',
-               IMAGE, 'sh', '-c', script, 'ci', job['commit'], WORKERD_RELEASES, 'stock-workerd']
-    else:
-        cmd = ['proot-distro', 'login', DISTRO, '--isolated', '--bind', workspace.name + ':/tmp', '--bind', cache + ':/cache', '--',
-               'sh', '-c', script, 'ci', job['commit'], WORKERD_RELEASES, 'patched-workerd']
+    cmd = ['podman', 'run', '--rm', '--name', 'selfgit-ci-%s' % job['id'], '--memory', MEMORY, '--memory-swap', MEMORY,
+           '--cpus', CPUS, '--pids-limit', '512', '--volume', workspace.name + ':/tmp:Z', '--volume', cache + ':/cache:Z',
+           IMAGE, 'sh', '-c', script, 'ci', job['commit']]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     selector = selectors.DefaultSelector()
     selector.register(proc.stdout, selectors.EVENT_READ)
