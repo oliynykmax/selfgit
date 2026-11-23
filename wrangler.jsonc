@@ -5,6 +5,7 @@
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
+  "routes": [{ "pattern": "git.oliinyk.dev", "custom_domain": true }],
   "vars": { "GITHUB_OWNER_ID": "85843900" },
   "secrets": {
     "required": ["GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_SECRET"],

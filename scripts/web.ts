@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { cp, copyFile, mkdir, rm } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import tailwind from "bun-plugin-tailwind";
 
@@ -52,4 +52,17 @@ export async function build() {
   await Bun.write(index, html);
 }
 
-if (import.meta.main) await build();
+/** Builds the Astro landing pages; the Worker embeds the server bundle and serves the client files from web/dist. */
+export async function buildAstro() {
+  const astro = Bun.spawn(["bun", "run", "astro:build"], {
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  if ((await astro.exited) !== 0) throw new Error("astro build failed");
+  await cp("astro/dist/client", outdir, { recursive: true });
+}
+
+if (import.meta.main) {
+  await build();
+  await buildAstro();
+}

@@ -277,6 +277,24 @@ describe("smart HTTP Git on a Durable Object", () => {
     ).toBe("failed");
   });
 
+  test("landing pages render from the same Worker, reading data in process", async () => {
+    const page = await fetch(`${base}/selfgit`);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("Content-Type")).toContain("text/html");
+    const html = await page.text();
+    expect(html).toContain("queue.txt");
+    expect(html).toContain("/selfgit/actions");
+    const css = /href="(\/_astro\/[^"]+\.css)"/.exec(html)?.[1];
+    expect(css).toBeTruthy();
+    const asset = await fetch(`${base}${css}`);
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get("Cache-Control")).toContain("immutable");
+    const commits = await fetch(`${base}/api/commits/selfgit?ref=main`);
+    expect(commits.status).toBe(200);
+    expect((await commits.json()).commits.length).toBeGreaterThan(0);
+    expect((await fetch(`${base}/selfgit/actions`)).status).toBe(200);
+  });
+
   test("maintenance audit requires owner and only accepts named targets", async () => {
     const path = `${base}/api/maintenance/repo1`;
     expect((await fetch(path)).status).toBe(403);
