@@ -88,6 +88,10 @@ Everything runs on [Bun](https://bun.com). Bun bundles the React and Tailwind we
 
 Every push to the `main` branch of selfgit's own repository queues a CI job. [`runner/runner.py`](runner/runner.py) polls the Worker for jobs, checks out the commit in a rootless Podman container, and runs `bun run ci`. It works on any aarch64 Linux host: build `runner/Containerfile` into `localhost/selfgit-ci`, then start `runner.py` with `SELFGIT_CI_TOKEN_FILE` set. Each job is limited by `SELFGIT_CI_MEMORY` (default 1536m) and `SELFGIT_CI_CPUS` (default 1).
 
+A passing CI run on the head of `main` queues a deploy job for the same commit. The runner claims it only when `SELFGIT_CI_CLOUDFLARE_TOKEN_FILE` and `SELFGIT_CI_CLOUDFLARE_ACCOUNT_ID` are set, then runs `bun run deploy` in a fresh container. That container alone gets the Cloudflare token, through its environment, and the runner redacts it from the log. A deploy waiting for an old commit is superseded by a newer push, and one that has started always finishes. Open the **Actions** tab to watch runs and their live logs.
+
+The token needs Workers Scripts: Edit on the account and Workers Routes: Edit plus Zone: Read on the zone that serves the custom domains.
+
 <details>
 <summary><strong>Push authentication tradeoffs</strong></summary>
 
