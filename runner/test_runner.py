@@ -17,9 +17,9 @@ with tempfile.NamedTemporaryFile(mode='w') as token:
 class RunnerTest(unittest.TestCase):
     def test_failure_and_secret_redaction(self):
         with tempfile.TemporaryDirectory() as directory:
-            proot = Path(directory) / 'proot-distro'
-            proot.write_text('#!/bin/sh\nif [ "$1" = login ]; then printf sensitive-; sleep 0.1; printf "token lease-secret\\n"; exit 1; fi\n')
-            proot.chmod(0o755)
+            podman = Path(directory) / 'podman'
+            podman.write_text('#!/bin/sh\nif [ "$1" = run ]; then printf sensitive-; sleep 0.1; printf "token lease-secret\\n"; exit 1; fi\n')
+            podman.chmod(0o755)
             calls = []
             def request(endpoint, body):
                 calls.append((endpoint, body))
@@ -33,9 +33,9 @@ class RunnerTest(unittest.TestCase):
 
     def test_heartbeat_during_job(self):
         with tempfile.TemporaryDirectory() as directory:
-            proot = Path(directory) / 'proot-distro'
-            proot.write_text('#!/bin/sh\nif [ "$1" = login ]; then sleep 1.2; fi\n')
-            proot.chmod(0o755)
+            podman = Path(directory) / 'podman'
+            podman.write_text('#!/bin/sh\nif [ "$1" = run ]; then sleep 1.2; fi\n')
+            podman.chmod(0o755)
             calls = []
             def request(endpoint, body):
                 calls.append(endpoint)
@@ -45,7 +45,7 @@ class RunnerTest(unittest.TestCase):
             self.assertIn('heartbeat', calls)
             self.assertEqual(calls[-1], 'finish')
 
-    def test_podman_backend_limits_and_command(self):
+    def test_container_limits_and_command(self):
         with tempfile.TemporaryDirectory() as directory:
             podman = Path(directory) / 'podman'
             podman.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$SELFGIT_ARGS"\n')
@@ -56,13 +56,12 @@ class RunnerTest(unittest.TestCase):
                 calls.append(endpoint)
                 return {'ok': True}
             env = {'PATH': directory + ':' + os.environ['PATH'], 'SELFGIT_CI_WORKDIR': directory, 'SELFGIT_ARGS': str(args)}
-            with patch.dict(os.environ, env), patch.object(runner, 'BACKEND', 'podman'), patch.object(runner, 'request', request):
+            with patch.dict(os.environ, env), patch.object(runner, 'request', request):
                 runner.execute({'id': 7, 'kind': 'ci', 'commit': 'c' * 40, 'leaseToken': 'lease'})
             lines = args.read_text().split('\n')
             self.assertEqual(lines[:2], ['run', '--rm'])
             self.assertIn('selfgit-ci-7', lines)
             self.assertIn('1536m', lines)
-            self.assertIn('stock-workerd', lines)
             self.assertEqual(calls[-1], 'finish')
 
     def test_rejects_other_kinds(self):

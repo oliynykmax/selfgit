@@ -1,6 +1,5 @@
 #!/bin/sh
-# Prepares the proot Debian guest on the Termux CI phone:
-#   proot-distro install debian && proot-distro login debian -- sh setup-guest.sh
+# Installs the CI toolchain into the Debian guest image (run by runner/Containerfile).
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
@@ -13,7 +12,6 @@ install -m 755 /tmp/bun-linux-aarch64/bun /usr/local/bin/bun
 rm -rf /tmp/bun.zip /tmp/bun-linux-aarch64
 # bun check, bun lint and bun fmt ship in canary builds.
 bun upgrade --canary
-mkdir -p /opt/workerd
 node --version
 bun --version
 git --version

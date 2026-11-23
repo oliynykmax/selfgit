@@ -86,9 +86,7 @@ Everything runs on [Bun](https://bun.com). Bun bundles the React and Tailwind we
 
 ### CI
 
-Every push to the `main` branch of selfgit's own repository queues a CI job. [`runner/runner.py`](runner/runner.py) polls the Worker for jobs, checks out the commit in an isolated [proot](https://github.com/termux/proot-distro) Debian guest, and runs `bun run ci`. The runner lives on an Android phone in Termux. Android kernels have a 39-bit address space, which the stock workerd allocator can't handle, so the tests use workerd [built without tcmalloc](https://github.com/oliynykmax/workerd-arm64-39bit).
-
-A second runner can run on any aarch64 Linux host with rootless Podman: build `runner/Containerfile`, then start `runner.py` with `SELFGIT_CI_BACKEND=podman`. It runs each job in a container limited by `SELFGIT_CI_MEMORY` (default 1536m) and `SELFGIT_CI_CPUS` (default 1), and uses stock workerd.
+Every push to the `main` branch of selfgit's own repository queues a CI job. [`runner/runner.py`](runner/runner.py) polls the Worker for jobs, checks out the commit in a rootless Podman container, and runs `bun run ci`. It works on any aarch64 Linux host: build `runner/Containerfile` into `localhost/selfgit-ci`, then start `runner.py` with `SELFGIT_CI_TOKEN_FILE` set. Each job is limited by `SELFGIT_CI_MEMORY` (default 1536m) and `SELFGIT_CI_CPUS` (default 1).
 
 <details>
 <summary><strong>Push authentication tradeoffs</strong></summary>
