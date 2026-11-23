@@ -94,6 +94,17 @@ describe("routes", () => {
       kind: "not-found",
     });
     expect(parseRoute("/invalid%20name")).toEqual({ kind: "not-found" });
+    expect(parseRoute("/selfgit/actions")).toEqual({
+      kind: "actions",
+      repo: "selfgit",
+    });
+    expect(parseRoute("/selfgit/actions/45")).toEqual({
+      kind: "run",
+      repo: "selfgit",
+      id: 45,
+    });
+    expect(parseRoute("/selfgit/actions/x")).toEqual({ kind: "not-found" });
+    expect(parseRoute("/course-work/actions")).toEqual({ kind: "not-found" });
     expect(
       splitRefPath(
         ["feature", "reverse", "src", "a.c"],

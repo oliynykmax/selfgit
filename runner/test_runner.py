@@ -45,6 +45,22 @@ class RunnerTest(unittest.TestCase):
             self.assertIn('heartbeat', calls)
             self.assertEqual(calls[-1], 'finish')
 
+    def test_output_streams_while_the_job_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            podman = Path(directory) / 'podman'
+            podman.write_text('#!/bin/sh\nif [ "$1" = run ]; then printf first-line-padding-padding; sleep 1; printf "\\nsecond\\n"; fi\n')
+            podman.chmod(0o755)
+            calls = []
+            def request(endpoint, body):
+                calls.append((endpoint, body.get('text')))
+                return {'ok': True}
+            with patch.dict(os.environ, {'PATH': directory + ':' + os.environ['PATH'], 'SELFGIT_CI_WORKDIR': directory}), patch.object(runner, 'request', request), patch.object(runner, 'STREAM_INTERVAL', 0.2):
+                runner.execute({'id': 3, 'kind': 'ci', 'commit': 'd' * 40, 'leaseToken': 'x'})
+            logs = [text for endpoint, text in calls if endpoint == 'log']
+            self.assertGreater(len(logs), 1)
+            self.assertEqual(''.join(logs), 'first-line-padding-padding\nsecond\n')
+            self.assertEqual(calls[-1][0], 'finish')
+
     def test_container_limits_and_command(self):
         with tempfile.TemporaryDirectory() as directory:
             podman = Path(directory) / 'podman'

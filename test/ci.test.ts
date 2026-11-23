@@ -58,3 +58,26 @@ test("heartbeat extends only a live lease and cannot revive an expired or supers
   );
   db.close();
 });
+
+test("a single run carries its log and unknown ids are null", () => {
+  const db = new Database(":memory:");
+  const sql = {
+    exec(query: string, ...args: unknown[]) {
+      const rows = db.query(query).all(...(args as never[]));
+      return { toArray: () => rows, one: () => rows[0] };
+    },
+  } as unknown as SqlStorage;
+  db.run("CREATE TABLE refs (name TEXT PRIMARY KEY, oid TEXT NOT NULL)");
+  db.run("INSERT INTO refs VALUES ('refs/heads/main', 'abc')");
+  const queue = new CiQueue(sql);
+  queue.enqueue("abc");
+  const job = queue.claim("ci", 1000)!;
+  queue.log(job.id, job.leaseToken, "$ bun install\n", 1001);
+  expect(queue.run(job.id)).toMatchObject({
+    id: job.id,
+    state: "leased",
+    log: "$ bun install\n",
+  });
+  expect(queue.run(999)).toBeNull();
+  db.close();
+});

@@ -135,3 +135,24 @@ export type Session =
 export interface ApiError {
   error: string;
 }
+
+/** The repository whose pushes to main run CI, and so the only one with an Actions tab. */
+export const PIPELINE_REPO = "selfgit";
+
+export type CiState =
+  "queued" | "leased" | "succeeded" | "failed" | "superseded";
+
+export interface CiRun {
+  id: number;
+  kind: "ci" | "backup";
+  commit_oid: string;
+  state: CiState;
+  /** Unix milliseconds. */
+  created_at: number;
+  finished_at: number | null;
+}
+
+export interface CiRunDetail extends CiRun {
+  /** The last 64 KB of sanitized runner output. */
+  log: string;
+}
