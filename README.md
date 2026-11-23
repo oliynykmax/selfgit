@@ -52,14 +52,15 @@ Moving repositories from another Git server? `scripts/transfer.sh <source> <self
 
 ```bash
 bun install
-bun run deploy
+bunx wrangler login
+bunx wrangler secret put GITHUB_OAUTH_CLIENT_ID       # optional, for web sign-in
+bunx wrangler secret put GITHUB_OAUTH_CLIENT_SECRET
+GITHUB_OWNER_ID=$(gh api user --jq .id) bun run deploy
 ```
 
-Then, in [`wrangler.jsonc`](wrangler.jsonc):
+`GITHUB_OWNER_ID` is your numeric GitHub id. The id is checked, not the login, because a login can be renamed and claimed by someone else. `bun run deploy` deploys the `selfgit` backend and then the `selfgit-astro` front end, which is served at `https://selfgit-astro.<your-subdomain>.workers.dev`. To use your own domain, add `--domain <hostname>` to the front-end deploy (`bun run astro:deploy -- --domain <hostname>`). Wrangler creates the `selfgit-objects` R2 bucket on the first deploy.
 
-1. Set `GITHUB_OWNER_ID` to your numeric GitHub id (`gh api user --jq .id`). The id is checked, not the login, because a login can be renamed and claimed by someone else.
-2. Point `routes` at your own domain.
-3. Add `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` as Worker secrets for web sign-in.
+To deploy from GitHub Actions on every push to `main`, configure the `production` environment as described at the top of `.github/workflows/deploy.yml`. Every setting is in `.env.example`.
 
 ### Develop
 
