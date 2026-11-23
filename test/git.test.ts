@@ -295,6 +295,18 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect((await fetch(`${base}/selfgit/actions`)).status).toBe(200);
   });
 
+  test("history pages read the same after the runtime restarts and drops its memory", async () => {
+    const log = async (page = 0) =>
+      await (
+        await fetch(`${base}/api/repos/selfgit/commits?ref=main&page=${page}`)
+      ).json();
+    const before = [await log(0), await log(1)];
+    expect(before[0].commits.length).toBeGreaterThan(1);
+    await stopServer();
+    await startServer();
+    expect([await log(0), await log(1)]).toEqual(before);
+  });
+
   test("maintenance audit requires owner and only accepts named targets", async () => {
     const path = `${base}/api/maintenance/repo1`;
     expect((await fetch(path)).status).toBe(403);

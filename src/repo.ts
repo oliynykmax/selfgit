@@ -1,3 +1,4 @@
+import { CommitCache } from "./commit-cache";
 import { CiQueue, MAIN, PIPELINE_REPO, type JobKind } from "./ci";
 import { Buffer } from "node:buffer";
 import { DurableObject } from "cloudflare:workers";
@@ -55,6 +56,8 @@ export class Repository extends DurableObject<Env> {
 
   private readonly ci = new CiQueue(this.ctx.storage.sql);
 
+  private readonly commits = new CommitCache(this.ctx.storage.sql);
+
   private pending: Promise<void> = Promise.resolve();
 
   private deleted(): boolean {
@@ -95,6 +98,7 @@ export class Repository extends DurableObject<Env> {
         this.ctx.storage.sql.exec("DELETE FROM refs");
         this.ctx.storage.sql.exec("DELETE FROM object_chunks");
         this.ctx.storage.sql.exec("DELETE FROM objects");
+        this.commits.clear();
       });
     });
   }
@@ -206,7 +210,10 @@ export class Repository extends DurableObject<Env> {
       if (this.deleted())
         return { ok: false, status: 404, error: "Repository deleted" };
       try {
-        return { ok: true, value: await read(new Browser(this.store)) };
+        return {
+          ok: true,
+          value: await read(new Browser(this.store, this.commits)),
+        };
       } catch (error) {
         if (error instanceof NotFound)
           return { ok: false, status: 404, error: error.message };

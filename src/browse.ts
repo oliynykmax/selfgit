@@ -22,6 +22,7 @@ import type {
   TreeView,
 } from "./api-types";
 import { isOid, type ObjectStore } from "./objects";
+import type { CommitCache } from "./commit-cache";
 import { headTarget } from "./protocol";
 
 export const PAGE_SIZE = 30;
@@ -123,15 +124,22 @@ export class Browser {
   private readonly trees = new Map<string, RawEntry[]>();
   private readonly dirs = new Map<string, Map<string, string>>();
 
-  constructor(private readonly store: ObjectStore) {}
+  constructor(
+    private readonly store: ObjectStore,
+    private readonly saved?: CommitCache,
+  ) {}
 
   async commit(oid: string): Promise<CommitDetail> {
-    const cached = this.commits.get(oid);
-    if (cached) return cached;
+    const cached = this.commits.get(oid) ?? this.saved?.get(oid);
+    if (cached) {
+      this.commits.set(oid, cached);
+      return cached;
+    }
     const object = await this.store.read(oid);
     if (object?.type !== "commit") throw new NotFound(`no commit ${oid}`);
     const commit = parseCommit(oid, object.content);
     this.commits.set(oid, commit);
+    this.saved?.put(commit);
     return commit;
   }
 
