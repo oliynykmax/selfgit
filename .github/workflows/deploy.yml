@@ -43,7 +43,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_OWNER_ID: ${{ vars.GITHUB_OWNER_ID }}
         run: bunx wrangler deploy --var "GITHUB_OWNER_ID:$GITHUB_OWNER_ID"
-      - run: bun run astro:build
+      - run: bun --bun run astro:build
       - name: Deploy the front end
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
