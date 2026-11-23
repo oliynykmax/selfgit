@@ -61,6 +61,34 @@ class RunnerTest(unittest.TestCase):
             self.assertEqual(''.join(logs), 'first-line-padding-padding\nsecond\n')
             self.assertEqual(calls[-1][0], 'finish')
 
+    def test_deploy_needs_credentials_and_keeps_them_off_the_command_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            podman = Path(directory) / 'podman'
+            podman.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$SELFGIT_ARGS"\nif [ "$1" = run ]; then echo "token is $CLOUDFLARE_API_TOKEN"; fi\n')
+            podman.chmod(0o755)
+            token = Path(directory) / 'cf'
+            token.write_text('cf-secret-value\n')
+            args = Path(directory) / 'args'
+            calls = []
+            def request(endpoint, body):
+                calls.append((endpoint, body))
+                return {'ok': True}
+            job = {'id': 8, 'kind': 'deploy', 'commit': 'e' * 40, 'leaseToken': 'lease'}
+            env = {'PATH': directory + ':' + os.environ['PATH'], 'SELFGIT_CI_WORKDIR': directory, 'SELFGIT_ARGS': str(args)}
+            with patch.dict(os.environ, env), patch.object(runner, 'request', request):
+                self.assertIsNone(runner.cloudflare_token())
+                with self.assertRaises(ValueError):
+                    runner.execute(job)
+            env.update(SELFGIT_CI_CLOUDFLARE_TOKEN_FILE=str(token), SELFGIT_CI_CLOUDFLARE_ACCOUNT_ID='acct123')
+            with patch.dict(os.environ, env), patch.object(runner, 'request', request):
+                runner.execute(job)
+            self.assertNotIn('cf-secret-value', args.read_text())
+            text = ''.join(body['text'] for endpoint, body in calls if endpoint == 'log')
+            self.assertIn('token is [redacted]', text)
+            self.assertNotIn('cf-secret-value', text)
+            self.assertIn('CLOUDFLARE_ACCOUNT_ID=acct123', args.read_text())
+            self.assertEqual(calls[-1], ('finish', {'id': 8, 'leaseToken': 'lease', 'success': True}))
+
     def test_container_limits_and_command(self):
         with tempfile.TemporaryDirectory() as directory:
             podman = Path(directory) / 'podman'

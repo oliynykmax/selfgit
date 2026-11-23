@@ -135,7 +135,11 @@ async function runner(
   }
   if (!body || typeof body !== "object") return text(400, "Invalid body");
   const repo = env.REPOS.getByName(PIPELINE_REPO);
-  if (path === "/api/runner/claim" && "kind" in body && body.kind === "ci")
+  if (
+    path === "/api/runner/claim" &&
+    "kind" in body &&
+    (body.kind === "ci" || body.kind === "deploy")
+  )
     return Response.json(await repo.ciClaim(body.kind));
   if (
     !("id" in body) ||

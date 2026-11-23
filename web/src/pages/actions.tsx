@@ -37,6 +37,12 @@ const TONES: Record<CiState, string> = {
   superseded: "border-border text-muted-foreground",
 };
 
+const KINDS: Record<CiRun["kind"], string> = {
+  ci: "CI",
+  deploy: "Deploy",
+  backup: "Backup",
+};
+
 const REFRESH_MS = 5000;
 
 function active(run: CiRun): boolean {
@@ -113,7 +119,7 @@ export function ActionsPage({ repo }: { repo: RepoName }) {
                   href={href.run(repo, run.id)}
                   className="font-medium hover:underline"
                 >
-                  {run.kind === "ci" ? "CI" : "Backup"} #{run.id}
+                  {KINDS[run.kind]} #{run.id}
                 </Link>
               </TableCell>
               <TableCell>
@@ -169,7 +175,7 @@ export function RunPage({ repo, id }: { repo: RepoName; id: number }) {
           All runs
         </Link>
         <h2 className="font-semibold">
-          {data.kind === "ci" ? "CI" : "Backup"} #{data.id}
+          {KINDS[data.kind]} #{data.id}
         </h2>
         <StateBadge state={data.state} />
         <Link

@@ -144,7 +144,7 @@ export type CiState =
 
 export interface CiRun {
   id: number;
-  kind: "ci" | "backup";
+  kind: "ci" | "backup" | "deploy";
   commit_oid: string;
   state: CiState;
   /** Unix milliseconds. */
