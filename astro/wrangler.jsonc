@@ -3,11 +3,6 @@
   "name": "selfgit-astro",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
-  "routes": [
-    { "pattern": "git.oliinyk.dev", "custom_domain": true },
-    { "pattern": "astro.git.oliinyk.dev", "custom_domain": true },
-  ],
-  "workers_dev": false,
   "services": [{ "binding": "SELF_GIT", "service": "selfgit", "remote": true }],
   "observability": { "enabled": true, "head_sampling_rate": 1 },
 }

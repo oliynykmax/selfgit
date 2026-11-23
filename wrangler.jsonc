@@ -5,7 +5,8 @@
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
-  "vars": { "GITHUB_OWNER_ID": "85843900" },
+  // Your numeric GitHub id, passed at deploy time with --var GITHUB_OWNER_ID:<id>. Empty disables push.
+  "vars": { "GITHUB_OWNER_ID": "" },
   "secrets": {
     "required": ["GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_SECRET"],
   },
