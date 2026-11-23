@@ -1,6 +1,7 @@
 import { PIPELINE_REPO } from "./ci";
 import { isRepoName } from "./api-types";
 import { handleApi } from "./api";
+import { backendStore, isAstroRoute } from "./astro-bridge";
 import { denyPush, GitHubIdentity } from "./auth";
 import {
   CALLBACK_PATH,
@@ -181,9 +182,17 @@ async function page(request: Request, env: Env): Promise<Response> {
 }
 
 export function createHandler(identity: GitHubIdentity) {
-  return {
+  const handler = {
     async fetch(request, env, ctx): Promise<Response> {
       const url = new URL(request.url);
+      if (isAstroRoute(url.pathname)) {
+        const { default: astro } =
+          await import("../astro/dist/server/entry.mjs");
+        return backendStore.run(
+          (inner) => handler.fetch(inner as typeof request, env, ctx),
+          () => astro.fetch(request, env, ctx),
+        );
+      }
       if (url.pathname.startsWith("/api/runner/"))
         return runner(request, env, url.pathname);
       const gitMatch = GIT_ROUTE.exec(url.pathname);
@@ -207,6 +216,7 @@ export function createHandler(identity: GitHubIdentity) {
       return page(request, env);
     },
   } satisfies ExportedHandler<Env>;
+  return handler;
 }
 
 export default createHandler(identity);

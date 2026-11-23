@@ -1,11 +1,14 @@
 import type { RepoRefs, TreeView } from "../../../src/api-types";
-import { env } from "cloudflare:workers";
+import type { AsyncLocalStorage } from "node:async_hooks";
 
 const ORIGIN = "https://git.oliinyk.dev";
-type ServiceBinding = {
-  fetch(request: Request): Promise<Response>;
-};
-const selfgit = (env as unknown as { SELF_GIT: ServiceBinding }).SELF_GIT;
+type Backend = (request: Request) => Promise<Response>;
+// The Worker runs Astro inside its own request, so repository data comes from calling its handler directly.
+const backend = (
+  globalThis as unknown as {
+    __selfgitBackend?: AsyncLocalStorage<Backend>;
+  }
+).__selfgitBackend;
 
 function encodePath(path: string): string {
   return path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
@@ -19,7 +22,9 @@ export function fetchSelfgit(
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
-  return selfgit.fetch(new Request(siteUrl(path), init));
+  const call = backend?.getStore();
+  if (!call) throw new Error("Astro rendered outside the selfgit Worker");
+  return call(new Request(siteUrl(path), init));
 }
 
 export function repoUrl(repo: string): string {
