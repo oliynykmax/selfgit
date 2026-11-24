@@ -50,7 +50,7 @@ export function DeleteRef({
         <Trash2 />
       </AlertDialogTrigger>
       <AlertDialogBackdrop className="fixed inset-0 bg-black/20" />
-      <AlertDialogContent className="fixed top-1/2 left-1/2 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border bg-background p-5 shadow-lg">
+      <AlertDialogContent className="rounded-xl border bg-background p-5 shadow-lg">
         <AlertDialogTitle className="text-base font-semibold">
           Delete {kind} <span className="font-mono">{name}</span>?
         </AlertDialogTitle>
