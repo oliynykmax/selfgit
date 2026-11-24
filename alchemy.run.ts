@@ -1,11 +1,14 @@
-import { Stack, localState } from "alchemy";
+import { localState, Stack } from "alchemy";
 import * as Effect from "effect/Effect";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 
 /**
- * Parallel deployment of selfgit managed by alchemy.run instead of wrangler.
- * Same worker code (src/index.ts), same R2 bucket, fresh Durable Object
- * namespaces, served from *.workers.dev. wrangler flow stays untouched.
+ * The main selfgit deployment, managed by alchemy.run (replacing wrangler).
+ *  - name "selfgit" + custom domain git.oliinyk.dev
+ *  - the R2 bucket is bound via lookup: alchemy never manages the bucket
+ *  - Durable Object classes keep their existing production state
+ *    (script version updates never reset DO storage)
+ *  - GITHUB_OAUTH_* secrets persist on the script across versions
  */
 export default Stack(
   "selfgit",
@@ -14,16 +17,15 @@ export default Stack(
     state: localState(),
   } as never,
   Effect.gen(function* () {
-    const worker = yield* Cloudflare.Worker("selfgit-alchemy", {
-      name: "selfgit-alchemy",
+    const worker = yield* Cloudflare.Worker("selfgit", {
+      name: "selfgit",
       main: "./src/index.ts",
       compatibilityDate: "2026-11-01",
       compatibilityFlags: ["nodejs_compat"],
-      workersDev: true,
+      workersDev: false,
+      domain: "git.oliinyk.dev",
       env: {
         GITHUB_OWNER_ID: "85843900",
-        // lookup binds the existing bucket without managing it:
-        // read at plan time, never created/updated/deleted by alchemy.
         OBJECTS: Cloudflare.R2.Bucket.lookup({ name: "selfgit-objects" }),
         REPOS: Cloudflare.DurableObject("REPOS", {
           className: "Repository",
