@@ -4,6 +4,7 @@ import {
   type RepoRefs,
 } from "../../../src/api-types";
 import { Link } from "@/components/link";
+import { useSession } from "@/components/header";
 import { Problem } from "@/components/states";
 import { useApi } from "@/lib/api";
 import { apiUrl, href, type RepoTab, type Route, tabOf } from "@/lib/route";
@@ -13,6 +14,7 @@ import { CommitPage } from "./commit";
 import { ActionsPage, RunPage } from "./actions";
 import { CommitsPage } from "./commits";
 import { RefsPage } from "./refs";
+import { SettingsPage } from "./settings";
 
 type RepoRoute = Exclude<Route, { kind: "home" } | { kind: "not-found" }>;
 
@@ -25,6 +27,7 @@ function Tabs({
   refs: RepoRefs | null;
   active: RepoTab;
 }) {
+  const owner = useSession()?.authenticated ?? false;
   const tabs: { id: RepoTab; label: string; to: string; count?: number }[] = [
     { id: "code", label: "Code", to: href.repo(repo) },
     {
@@ -49,6 +52,8 @@ function Tabs({
   ];
   if (repo === PIPELINE_REPO)
     tabs.push({ id: "actions", label: "Actions", to: href.actions(repo) });
+  if (owner)
+    tabs.push({ id: "settings", label: "Settings", to: href.settings(repo) });
   return (
     <nav aria-label="Repository" className="-mb-px flex gap-1 overflow-x-auto">
       {tabs.map((tab) => (
@@ -88,6 +93,9 @@ export function RepoPage({ route }: { route: RepoRoute }) {
           {route.repo}
         </Link>
       </div>
+      {data?.description ? (
+        <p className="mt-1 text-sm text-muted-foreground">{data.description}</p>
+      ) : null}
       <div className="mt-5 border-b">
         <Tabs repo={route.repo} refs={data} active={tabOf(route) ?? "code"} />
       </div>
@@ -115,6 +123,8 @@ function RepoView({ route, refs }: { route: RepoRoute; refs: RepoRefs }) {
       return <RefsPage repo={route.repo} refs={refs} kind="branch" />;
     case "tags":
       return <RefsPage repo={route.repo} refs={refs} kind="tag" />;
+    case "settings":
+      return <SettingsPage repo={route.repo} refs={refs} />;
     case "actions":
       return <ActionsPage repo={route.repo} />;
     case "run":

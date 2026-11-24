@@ -37,12 +37,15 @@ document.head.append(
 ).IS_REACT_ACT_ENVIRONMENT = false;
 (globalThis as { __UI_SDK_STRICT__?: boolean }).__UI_SDK_STRICT__ = true;
 
-const { cleanup, render, screen } = await import("@testing-library/react");
+const { cleanup, fireEvent, render, screen, waitFor } =
+  await import("@testing-library/react");
 const { createAgent } = await import("@ui-sdk/react/agent");
 const { renderMarkdown, resolvePath } = await import("../web/src/lib/markdown");
 const { parseRoute, splitRefPath, href } = await import("../web/src/lib/route");
 const { RefPicker } = await import("../web/src/components/ref-picker");
 const { DeleteRef } = await import("../web/src/components/delete-ref");
+const { SettingsPage } = await import("../web/src/pages/settings");
+const { invalidate } = await import("../web/src/lib/api");
 
 let approve = false;
 const agent = createAgent({ allow: (step) => !step.confirm || approve });
@@ -63,6 +66,7 @@ const commit = {
 const refs = {
   name: "course-work" as const,
   defaultBranch: "main",
+  description: "",
   branches: [
     { name: "main", commit },
     { name: "feature/reverse", commit },
@@ -105,6 +109,14 @@ describe("routes", () => {
     });
     expect(parseRoute("/selfgit/actions/x")).toEqual({ kind: "not-found" });
     expect(parseRoute("/course-work/actions")).toEqual({ kind: "not-found" });
+    expect(parseRoute("/course-work/settings")).toEqual({
+      kind: "settings",
+      repo: "course-work",
+    });
+    expect(parseRoute("/course-work/settings/x")).toEqual({
+      kind: "not-found",
+    });
+    expect(href.settings("course-work")).toBe("/course-work/settings");
     expect(
       splitRefPath(
         ["feature", "reverse", "src", "a.c"],
@@ -242,5 +254,117 @@ describe("agent-ready controls", () => {
       },
     ]);
     expect(screen.queryByText(/Delete branch/)).toBeNull();
+  });
+});
+
+describe("repository settings", () => {
+  const calls: { url: string; method: string; body?: string }[] = [];
+  function backend(session: unknown) {
+    calls.length = 0;
+    invalidate("/api/");
+    globalThis.fetch = mock(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const path = String(url);
+        calls.push({
+          url: path,
+          method: init?.method ?? "GET",
+          body: init?.body as string | undefined,
+        });
+        if (path === "/api/session") return Response.json(session);
+        return init?.method === "PATCH"
+          ? Response.json({})
+          : new Response(null, { status: 200 });
+      },
+    ) as unknown as typeof fetch;
+  }
+  const owner = { authenticated: true, login: "owner", avatarUrl: "" };
+
+  test("signed-out visitors are asked to sign in as the owner", async () => {
+    backend({ authenticated: false });
+    render(<SettingsPage repo="course-work" refs={refs} />);
+    expect(await screen.findByText("Owner sign-in required")).toBeTruthy();
+    expect(screen.queryByLabelText("Default branch")).toBeNull();
+  });
+
+  test("the owner picks another default branch and saves it", async () => {
+    backend(owner);
+    render(<SettingsPage repo="course-work" refs={refs} />);
+    const select = (await screen.findByLabelText(
+      "Default branch",
+    )) as HTMLSelectElement;
+    expect(select.value).toBe("main");
+    expect([...select.options].map((option) => option.value)).toEqual([
+      "main",
+      "feature/reverse",
+    ]);
+    const save = screen.getByLabelText(
+      "Save default branch",
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(select, { target: { value: "feature/reverse" } });
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([
+        {
+          url: "/api/repos/course-work/settings",
+          method: "PATCH",
+          body: JSON.stringify({ defaultBranch: "feature/reverse" }),
+        },
+      ]),
+    );
+  });
+
+  test("the description saves trimmed, and only once it changed", async () => {
+    backend(owner);
+    render(<SettingsPage repo="course-work" refs={refs} />);
+    const input = await screen.findByLabelText("Description");
+    const save = screen.getByLabelText("Save description") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: "  Algorithms  " } });
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(calls.find((call) => call.method === "PATCH")?.body).toBe(
+        JSON.stringify({ description: "Algorithms" }),
+      ),
+    );
+  });
+
+  test("deleting a repository needs its name typed, then calls the API", async () => {
+    backend(owner);
+    render(<SettingsPage repo="course-work" refs={refs} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete this repository" }),
+    );
+    const confirm = (await screen.findByText(
+      "Delete repository",
+    )) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/Type .* to confirm/), {
+      target: { value: "course-work" },
+    });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() =>
+      expect(calls.some((call) => call.method === "DELETE")).toBe(true),
+    );
+    expect(calls.find((call) => call.method === "DELETE")?.url).toBe(
+      "/api/repos/course-work",
+    );
+  });
+
+  test("the pipeline repository explains why it cannot be deleted", async () => {
+    backend(owner);
+    render(<SettingsPage repo="selfgit" refs={{ ...refs, name: "selfgit" }} />);
+    const button = (await screen.findByRole("button", {
+      name: "Delete this repository",
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(
+      screen.getByText(/pipeline repository cannot be deleted/),
+    ).toBeTruthy();
+    fireEvent.click(button);
+    expect(screen.queryByLabelText(/Type .* to confirm/)).toBeNull();
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
   });
 });

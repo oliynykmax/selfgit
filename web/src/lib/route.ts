@@ -4,7 +4,8 @@ import {
   type RepoName,
 } from "../../../src/api-types";
 
-export type RepoTab = "code" | "commits" | "branches" | "tags" | "actions";
+export type RepoTab =
+  "code" | "commits" | "branches" | "tags" | "actions" | "settings";
 
 export type Route =
   | { kind: "home" }
@@ -14,6 +15,7 @@ export type Route =
   | { kind: "commit"; repo: RepoName; oid: string }
   | { kind: "branches"; repo: RepoName }
   | { kind: "tags"; repo: RepoName }
+  | { kind: "settings"; repo: RepoName }
   | { kind: "actions"; repo: RepoName }
   | { kind: "run"; repo: RepoName; id: number }
   | { kind: "not-found" };
@@ -47,6 +49,7 @@ export function parseRoute(pathname: string): Route {
         : { kind: "not-found" };
     case "branches":
     case "tags":
+    case "settings":
       return rest.length === 0
         ? { kind: section, repo }
         : { kind: "not-found" };
@@ -74,6 +77,8 @@ export function tabOf(route: Route): RepoTab | null {
       return "branches";
     case "tags":
       return "tags";
+    case "settings":
+      return "settings";
     case "actions":
     case "run":
       return "actions";
@@ -120,6 +125,7 @@ export const href = {
   commit: (repo: RepoName, oid: string) => join(repo, "commit", oid),
   branches: (repo: RepoName) => join(repo, "branches"),
   tags: (repo: RepoName) => join(repo, "tags"),
+  settings: (repo: RepoName) => join(repo, "settings"),
   actions: (repo: RepoName) => join(repo, "actions"),
   run: (repo: RepoName, id: number) => join(repo, "actions", String(id)),
 };

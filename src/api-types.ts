@@ -49,9 +49,30 @@ export interface RepoSummary {
 export interface RepoRefs {
   name: RepoName;
   defaultBranch: string | null;
+  /** Free text the owner set in Settings; empty when unset. */
+  description: string;
   branches: RefSummary[];
   tags: RefSummary[];
 }
+
+export interface RepoSettings {
+  name: RepoName;
+  /** The branch HEAD points at now, whether configured or the main, master, first-branch fallback. */
+  defaultBranch: string | null;
+  /** Short names of every branch, the choices for the default branch. */
+  branches: string[];
+  description: string;
+  /** False for the pipeline repository. */
+  canDelete: boolean;
+}
+
+/** What the owner may change; each field is optional. */
+export interface SettingsPatch {
+  defaultBranch?: string;
+  description?: string;
+}
+
+export const DESCRIPTION_LIMIT = 280;
 
 export type EntryKind = "tree" | "blob" | "symlink" | "submodule";
 

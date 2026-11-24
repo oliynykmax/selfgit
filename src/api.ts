@@ -1,5 +1,11 @@
 import { PIPELINE_REPO } from "./ci";
-import { isRepoName, type RepoName, type Session } from "./api-types";
+import {
+  DESCRIPTION_LIMIT,
+  isRepoName,
+  type RepoName,
+  type Session,
+  type SettingsPatch,
+} from "./api-types";
 import { imageType } from "./browse";
 import { currentUser, type OAuthConfig, sameOrigin } from "./oauth";
 import type { Result } from "./repo";
@@ -97,6 +103,37 @@ type Handler = (
   rest: string[],
 ) => Promise<Response>;
 
+function parseSettingsPatch(body: unknown): SettingsPatch | string {
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    return "Send a JSON object with defaultBranch or description";
+  const { defaultBranch, description, ...extra } = body as Record<
+    string,
+    unknown
+  >;
+  if (Object.keys(extra).length > 0)
+    return `Unknown setting ${Object.keys(extra)[0]}`;
+  if (defaultBranch === undefined && description === undefined)
+    return "Send defaultBranch or description";
+  if (
+    defaultBranch !== undefined &&
+    (typeof defaultBranch !== "string" || defaultBranch === "")
+  )
+    return "defaultBranch must be a branch name";
+  if (description !== undefined && typeof description !== "string")
+    return "description must be a string";
+  if (
+    typeof description === "string" &&
+    description.trim().length > DESCRIPTION_LIMIT
+  )
+    return `The description can be at most ${DESCRIPTION_LIMIT} characters`;
+  return {
+    ...(defaultBranch !== undefined && {
+      defaultBranch: defaultBranch as string,
+    }),
+    ...(description !== undefined && { description: description as string }),
+  };
+}
+
 const REPO_ROUTES: Record<string, Partial<Record<string, Handler>>> = {
   "": { GET: async (_c, repo, name) => fromResult(await repo.refs(name)) },
   tree: {
@@ -141,6 +178,16 @@ const REPO_ROUTES: Record<string, Partial<Record<string, Handler>>> = {
       return fromResult(
         await repo.log(param(url, "ref", "HEAD"), param(url, "path"), page),
       );
+    },
+  },
+  settings: {
+    GET: async (_c, repo, name) => fromResult(await repo.settings(name)),
+    PATCH: async ({ request, auth, identity }, repo, name) => {
+      const denied = await authorizeOwner(request, auth, identity);
+      if (denied) return denied;
+      const patch = parseSettingsPatch(await request.json().catch(() => null));
+      if (typeof patch === "string") return error(400, patch);
+      return fromResult(await repo.updateSettings(name, patch));
     },
   },
   refs: {

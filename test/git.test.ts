@@ -1225,6 +1225,151 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect((await api("/tree?ref=main")).body.commit.oid).toBe(topic);
   });
 
+  test("the owner can change the default branch and description, and HEAD follows", async () => {
+    expect((await createRepo("settings-repo")).status).toBe(201);
+    const url = `${base}/api/repos/settings-repo`;
+    const patch = (
+      body: unknown,
+      headers: Record<string, string> = { Origin: base, Cookie: ownerCookie },
+    ) =>
+      fetch(`${url}/settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      });
+    const remove = (branch: string) =>
+      fetch(`${url}/refs?name=${encodeURIComponent(`refs/heads/${branch}`)}`, {
+        method: "DELETE",
+        headers: { Origin: base, Cookie: ownerCookie },
+      });
+    const symref = () =>
+      ok(work, "ls-remote", "--symref", `${base}/settings-repo.git`, "HEAD");
+
+    const src = newRepo("settings-repo");
+    const mainHead = commit(src, "a.txt", "main\n");
+    ok(src, "checkout", "-q", "-b", "trunk");
+    const trunkHead = commit(src, "b.txt", "trunk\n");
+    ok(src, "push", "-q", "origin", "main", "trunk");
+
+    expect(await (await fetch(`${url}/settings`)).json()).toEqual({
+      name: "settings-repo",
+      defaultBranch: "main",
+      branches: ["main", "trunk"],
+      description: "",
+      canDelete: true,
+    });
+    expect(symref()).toContain("ref: refs/heads/main\tHEAD");
+    expect((await remove("main")).status).toBe(409);
+
+    expect((await patch({ defaultBranch: "trunk" }, {})).status).toBe(403);
+    expect(
+      (await patch({ defaultBranch: "trunk" }, { Origin: base })).status,
+    ).toBe(401);
+    expect(
+      (
+        await patch(
+          { defaultBranch: "trunk" },
+          { Origin: "https://evil.example", Cookie: ownerCookie },
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await patch(
+          { defaultBranch: "trunk" },
+          { Authorization: "Bearer invalid-token" },
+        )
+      ).status,
+    ).toBe(401);
+    expect(symref()).toContain("ref: refs/heads/main\tHEAD");
+
+    for (const body of [
+      { defaultBranch: "missing" },
+      { defaultBranch: "refs/heads/trunk" },
+      { defaultBranch: "" },
+      { defaultBranch: 7 },
+      { description: "x".repeat(281) },
+      { description: 7 },
+      { colour: "red" },
+      {},
+      "not json",
+      [],
+    ])
+      expect((await patch(body)).status, JSON.stringify(body)).toBe(400);
+    expect(
+      (await patch({ description: "  " + "x".repeat(280) + "  " })).status,
+    ).toBe(200);
+
+    const changed = await patch(
+      { defaultBranch: "trunk", description: "  Course work  " },
+      { Authorization: `Bearer ${TOKEN}` },
+    );
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toEqual({
+      name: "settings-repo",
+      defaultBranch: "trunk",
+      branches: ["main", "trunk"],
+      description: "Course work",
+      canDelete: true,
+    });
+
+    expect(symref()).toContain("ref: refs/heads/trunk\tHEAD");
+    expect(
+      ok(work, "ls-remote", `${base}/settings-repo.git`, "HEAD"),
+    ).toContain(trunkHead);
+    const copy = clone("settings-repo");
+    expect(ok(copy, "branch", "--show-current")).toBe("trunk");
+    expect(ok(copy, "rev-parse", "HEAD")).toBe(trunkHead);
+    const browse = await (await fetch(url)).json();
+    expect(browse).toMatchObject({
+      defaultBranch: "trunk",
+      description: "Course work",
+    });
+    expect(
+      (await (await fetch(`${url}/tree?ref=HEAD`)).json()).commit.oid,
+    ).toBe(trunkHead);
+    expect(
+      (await (await fetch(`${base}/api/repos`)).json()).find(
+        (repo: { name: string }) => repo.name === "settings-repo",
+      ),
+    ).toMatchObject({ defaultBranch: "trunk" });
+
+    expect((await remove("trunk")).status).toBe(409);
+    expect((await remove("main")).status).toBe(200);
+    expect(symref()).toContain("ref: refs/heads/trunk\tHEAD");
+
+    ok(src, "push", "-q", "origin", "--delete", "trunk");
+    ok(src, "push", "-q", "origin", "main");
+    expect(symref()).toContain("ref: refs/heads/main\tHEAD");
+    expect((await (await fetch(url)).json()).defaultBranch).toBe("main");
+    ok(src, "push", "-q", "origin", `${trunkHead}:refs/heads/trunk`);
+    expect(symref()).toContain("ref: refs/heads/trunk\tHEAD");
+    expect(mainHead).not.toBe(trunkHead);
+
+    expect(
+      (
+        await fetch(`${base}/api/repos/settings-repo`, {
+          method: "DELETE",
+          headers: { Origin: base, Cookie: ownerCookie },
+        })
+      ).status,
+    ).toBe(200);
+    expect((await fetch(`${url}/settings`)).status).toBe(404);
+    expect((await createRepo("settings-repo")).status).toBe(409);
+  }, 60_000);
+
+  test("the pipeline repository cannot be deleted, even by the owner", async () => {
+    await createRepo("selfgit");
+    const response = await fetch(`${base}/api/repos/selfgit`, {
+      method: "DELETE",
+      headers: { Origin: base, Cookie: ownerCookie },
+    });
+    expect(response.status).toBe(409);
+    expect(
+      await (await fetch(`${base}/api/repos/selfgit/settings`)).json(),
+    ).toMatchObject({ canDelete: false });
+  });
+
   test("data survives a restart of the local runtime", async () => {
     const before = ok(work, "ls-remote", `${base}/fixture3.git`);
     const treeBefore = await (

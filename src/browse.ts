@@ -24,6 +24,7 @@ import type {
 import { isOid, type ObjectStore } from "./objects";
 import type { CommitCache } from "./commit-cache";
 import { headTarget } from "./protocol";
+import { NO_SETTINGS, type StoredSettings } from "./repo-settings";
 
 export const PAGE_SIZE = 30;
 const VIEW_LIMIT = 1 << 20;
@@ -127,6 +128,7 @@ export class Browser {
   constructor(
     private readonly store: ObjectStore,
     private readonly saved?: CommitCache,
+    private readonly settings: StoredSettings = NO_SETTINGS,
   ) {}
 
   async commit(oid: string): Promise<CommitDetail> {
@@ -211,7 +213,7 @@ export class Browser {
     const refs = this.store.refs();
     const candidates =
       revision === "HEAD"
-        ? [headTarget(refs)]
+        ? [headTarget(refs, this.settings.defaultBranch)]
         : [revision, `refs/heads/${revision}`, `refs/tags/${revision}`];
     for (const name of candidates) {
       const oid = name.startsWith("refs/") ? refs.get(name) : undefined;
@@ -247,10 +249,11 @@ export class Browser {
       b.commit.committer.time - a.commit.committer.time;
     branches.sort(newest);
     tags.sort(newest);
-    const head = headTarget(refs);
+    const head = headTarget(refs, this.settings.defaultBranch);
     return {
       name,
       defaultBranch: refs.has(head) ? head.slice("refs/heads/".length) : null,
+      description: this.settings.description,
       branches,
       tags,
     };

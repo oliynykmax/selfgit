@@ -38,10 +38,14 @@ const RECEIVE_CAPS = [
 const DEFAULT_HEAD = "refs/heads/main";
 
 /**
- * Stored repos have no settable HEAD, so HEAD follows main, then master, then the first branch.
- * Clones then check out whatever the course repo actually uses.
+ * HEAD is the configured default branch while that branch exists. Otherwise it follows main, then master, then the
+ * first branch, so clones check out whatever the course repo actually uses.
  */
-export function headTarget(refs: Map<string, string>): string {
+export function headTarget(
+  refs: Map<string, string>,
+  configured: string | null = null,
+): string {
+  if (configured && refs.has(configured)) return configured;
   if (refs.has(DEFAULT_HEAD)) return DEFAULT_HEAD;
   if (refs.has("refs/heads/master")) return "refs/heads/master";
   return (
@@ -58,10 +62,11 @@ interface Advertised {
 function advertisedRefs(
   store: ObjectStore,
   service: Service,
+  configuredHead: string | null = null,
 ): { lines: Advertised[]; head: string | null } {
   const refs = store.refs();
   const lines: Advertised[] = [];
-  const head = headTarget(refs);
+  const head = headTarget(refs, configuredHead);
   const headOid = refs.get(head);
   if (service === "git-upload-pack" && headOid)
     lines.push({ name: "HEAD", oid: headOid });
@@ -75,8 +80,12 @@ function advertisedRefs(
   return { lines, head: headOid ? head : null };
 }
 
-export function advertise(store: ObjectStore, service: Service): Buffer {
-  const { lines, head } = advertisedRefs(store, service);
+export function advertise(
+  store: ObjectStore,
+  service: Service,
+  configuredHead: string | null = null,
+): Buffer {
+  const { lines, head } = advertisedRefs(store, service, configuredHead);
   const caps = [
     ...(service === "git-upload-pack" ? UPLOAD_CAPS : RECEIVE_CAPS),
   ];

@@ -49,6 +49,16 @@ export async function send(
   if (!response.ok) throw await readError(response);
 }
 
+export async function patchJson<T>(url: string, body: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await readError(response);
+  return (await response.json()) as T;
+}
+
 /** Drops cached responses whose URL starts with `prefix`, so screens showing them load again. */
 export function invalidate(prefix: string): void {
   for (const key of [...cache.keys()])

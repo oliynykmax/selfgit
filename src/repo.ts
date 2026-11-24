@@ -2,7 +2,12 @@ import { CommitCache } from "./commit-cache";
 import { CiQueue, MAIN, PIPELINE_REPO, type JobKind } from "./ci";
 import { Buffer } from "node:buffer";
 import { DurableObject } from "cloudflare:workers";
-import type { RepoName } from "./api-types";
+import {
+  DESCRIPTION_LIMIT,
+  type RepoName,
+  type RepoSettings,
+  type SettingsPatch,
+} from "./api-types";
 import { Browser, NotFound } from "./browse";
 import {
   CorruptObject,
@@ -11,6 +16,7 @@ import {
   ZERO_OID,
 } from "./objects";
 import { ProtocolError } from "./pktline";
+import { RepoSettingsStore } from "./repo-settings";
 import { treeSnapshot } from "./tree-snapshot";
 import {
   advertise,
@@ -58,6 +64,8 @@ export class Repository extends DurableObject<Env> {
 
   private readonly commits = new CommitCache(this.ctx.storage.sql);
 
+  private readonly settingsStore = new RepoSettingsStore(this.ctx.storage.sql);
+
   private pending: Promise<void> = Promise.resolve();
 
   private deleted(): boolean {
@@ -99,6 +107,7 @@ export class Repository extends DurableObject<Env> {
         this.ctx.storage.sql.exec("DELETE FROM object_chunks");
         this.ctx.storage.sql.exec("DELETE FROM objects");
         this.commits.clear();
+        this.settingsStore.clear();
       });
     });
   }
@@ -163,12 +172,19 @@ export class Repository extends DurableObject<Env> {
     ) as Service;
     try {
       if (endpoint === "refs") {
-        return new Response(advertise(this.store, service), {
-          headers: {
-            "Content-Type": `application/x-${service}-advertisement`,
-            ...NO_CACHE,
+        return new Response(
+          advertise(
+            this.store,
+            service,
+            this.settingsStore.get().defaultBranch,
+          ),
+          {
+            headers: {
+              "Content-Type": `application/x-${service}-advertisement`,
+              ...NO_CACHE,
+            },
           },
-        });
+        );
       }
       const result =
         service === "git-upload-pack"
@@ -212,7 +228,9 @@ export class Repository extends DurableObject<Env> {
       try {
         return {
           ok: true,
-          value: await read(new Browser(this.store, this.commits)),
+          value: await read(
+            new Browser(this.store, this.commits, this.settingsStore.get()),
+          ),
         };
       } catch (error) {
         if (error instanceof NotFound)
@@ -300,6 +318,63 @@ export class Repository extends DurableObject<Env> {
     return this.browse((browser) => browser.commitView(oid));
   }
 
+  private readSettings(name: RepoName): RepoSettings {
+    const refs = this.store.refs();
+    const stored = this.settingsStore.get();
+    const head = headTarget(refs, stored.defaultBranch);
+    return {
+      name,
+      defaultBranch: refs.has(head) ? head.slice("refs/heads/".length) : null,
+      branches: [...refs.keys()]
+        .filter((ref) => ref.startsWith("refs/heads/"))
+        .map((ref) => ref.slice("refs/heads/".length)),
+      description: stored.description,
+      canDelete: name !== PIPELINE_REPO,
+    };
+  }
+
+  settings(name: RepoName): Promise<Result<RepoSettings>> {
+    return this.serialize(async () =>
+      this.deleted()
+        ? { ok: false, status: 404, error: "Repository deleted" }
+        : { ok: true, value: this.readSettings(name) },
+    );
+  }
+
+  /** Saves the given settings. The default branch must be a branch that exists now. */
+  updateSettings(
+    name: RepoName,
+    patch: SettingsPatch,
+  ): Promise<Result<RepoSettings>> {
+    return this.serialize(async () => {
+      if (this.deleted())
+        return { ok: false, status: 404, error: "Repository deleted" };
+      return this.ctx.storage.transactionSync((): Result<RepoSettings> => {
+        const current = this.settingsStore.get();
+        let defaultBranch = current.defaultBranch;
+        if (patch.defaultBranch !== undefined) {
+          const ref = `refs/heads/${patch.defaultBranch}`;
+          if (!this.store.refs().has(ref))
+            return {
+              ok: false,
+              status: 400,
+              error: `Branch ${patch.defaultBranch} does not exist`,
+            };
+          defaultBranch = ref;
+        }
+        const description = patch.description?.trim() ?? current.description;
+        if (description.length > DESCRIPTION_LIMIT)
+          return {
+            ok: false,
+            status: 400,
+            error: `The description can be at most ${DESCRIPTION_LIMIT} characters`,
+          };
+        this.settingsStore.set({ defaultBranch, description });
+        return { ok: true, value: this.readSettings(name) };
+      });
+    });
+  }
+
   /** Deletes a branch or tag. The branch HEAD follows is kept, as GitHub keeps the default branch. */
   async deleteRef(ref: string): Promise<Result<null>> {
     return this.serialize(async () => {
@@ -315,7 +390,7 @@ export class Repository extends DurableObject<Env> {
         const refs = this.store.refs();
         if (!refs.has(ref))
           return { ok: false, status: 404, error: `${ref} does not exist` };
-        if (ref === headTarget(refs))
+        if (ref === headTarget(refs, this.settingsStore.get().defaultBranch))
           return {
             ok: false,
             status: 409,
