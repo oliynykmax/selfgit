@@ -9,3 +9,4 @@ astro/dist/
 .tmp/
 .audit/
 __pycache__/
+.alchemy/
