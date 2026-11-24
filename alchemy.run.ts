@@ -14,9 +14,6 @@ export default Stack(
     state: localState(),
   } as never,
   Effect.gen(function* () {
-    // R2 bucket adopt requires R2 read during plan; disabled until the
-    // token carries R2:Edit (see comment in env below).
-
     const worker = yield* Cloudflare.Worker("selfgit-alchemy", {
       name: "selfgit-alchemy",
       main: "./src/index.ts",
@@ -25,8 +22,9 @@ export default Stack(
       workersDev: true,
       env: {
         GITHUB_OWNER_ID: "85843900",
-        // OBJECTS: R2 binding temporarily off — current token lacks R2 read
-        // (r2/buckets -> 403). Re-add once a token with R2:Edit is delivered.
+        // lookup binds the existing bucket without managing it:
+        // read at plan time, never created/updated/deleted by alchemy.
+        OBJECTS: Cloudflare.R2.Bucket.lookup({ name: "selfgit-objects" }),
         REPOS: Cloudflare.DurableObject("REPOS", {
           className: "Repository",
           storage: "sqlite",
