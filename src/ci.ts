@@ -24,7 +24,7 @@ export class CiQueue {
   }
   enqueue(oid: string) {
     this.sql.exec(
-      "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE (kind = 'ci' AND state IN ('queued', 'leased')) OR (kind = 'deploy' AND state = 'queued')",
+      "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE (kind = 'ci' AND state IN ('queued', 'leased')) OR (kind IN ('deploy', 'backup') AND state = 'queued')",
       Date.now(),
     );
     for (const kind of ["ci", "backup"])
@@ -41,13 +41,12 @@ export class CiQueue {
       kind,
       now,
     );
-    // A deploy that already started must finish; only waiting ones go stale.
-    if (kind === "ci" || kind === "deploy")
-      this.sql.exec(
-        "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE kind = ? AND (state = 'queued' OR (state = 'leased' AND kind = 'ci')) AND commit_oid != coalesce((SELECT oid FROM refs WHERE name = 'refs/heads/main'), '')",
-        now,
-        kind,
-      );
+    // A deploy or backup that already started must finish; only waiting ones go stale.
+    this.sql.exec(
+      "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE kind = ? AND (state = 'queued' OR (state = 'leased' AND kind = 'ci')) AND commit_oid != coalesce((SELECT oid FROM refs WHERE name = 'refs/heads/main'), '')",
+      now,
+      kind,
+    );
     if (
       this.sql
         .exec(

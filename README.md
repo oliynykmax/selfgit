@@ -92,6 +92,8 @@ A passing CI run on the head of `main` queues a deploy job for the same commit. 
 
 The token needs Workers Scripts: Edit on the account and Workers Routes: Edit plus Zone: Read on the zone that serves the custom domains.
 
+Every push to `main` also queues a backup job, which copies every branch and tag to the GitHub repository `oliynykmax/selfgit`. The runner claims it only when `SELFGIT_CI_GITHUB_KEY_FILE` (a deploy key with write access to that repository) and `SELFGIT_CI_GITHUB_KNOWN_HOSTS` (GitHub's pinned SSH host keys) are set. It runs on the runner host with plain `git`, because it executes no repository code. A backup never force-pushes and never deletes anything on GitHub, so a rewritten or emptied selfgit fails the job instead of overwriting the copy. Only the newest backup waits; a newer push supersedes older ones.
+
 <details>
 <summary><strong>Push authentication tradeoffs</strong></summary>
 

@@ -139,7 +139,7 @@ async function runner(
   if (
     path === "/api/runner/claim" &&
     "kind" in body &&
-    (body.kind === "ci" || body.kind === "deploy")
+    (body.kind === "ci" || body.kind === "deploy" || body.kind === "backup")
   )
     return Response.json(await repo.ciClaim(body.kind));
   if (

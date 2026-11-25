@@ -260,13 +260,13 @@ describe("smart HTTP Git on a Durable Object", () => {
         })
       ).json(),
     ).toEqual({ ok: true });
-    expect((await runner("claim", { kind: "backup" })).status).toBe(400);
+    expect((await runner("claim", { kind: "release" })).status).toBe(400);
     expect(
-      (await runs()).some(
-        (job: { kind: string; state: string }) =>
-          job.kind === "backup" && job.state === "queued",
-      ),
-    ).toBe(true);
+      await (await runner("claim", { kind: "backup" })).json(),
+    ).toMatchObject({
+      commit: first,
+      target: "oliynykmax/selfgit",
+    });
     const second = commit(src, "queue.txt", "two");
     ok(src, "push", "-q", "origin", "main");
     expect((await (await runner("claim", { kind: "ci" })).json()).commit).toBe(

@@ -149,3 +149,31 @@ test("a waiting deploy goes stale on a new head but a running one is kept", () =
   expect(states(queue, "deploy")).toEqual(["def:superseded", "abc:succeeded"]);
   db.close();
 });
+
+test("only the newest backup waits, and it names the GitHub mirror", () => {
+  const db = new Database(":memory:");
+  const queue = queueOn(db);
+  // Backups queued before runners could claim them, for commits long gone.
+  for (const oid of ["old1", "old2"])
+    db.run(
+      "INSERT INTO ci_jobs (kind, commit_oid, state, created_at) VALUES ('backup', ?, 'queued', 0)",
+      [oid],
+    );
+  queue.enqueue("abc");
+  db.run("UPDATE refs SET oid = 'def' WHERE name = 'refs/heads/main'");
+  queue.enqueue("def");
+  const backup = queue.claim("backup", 1000)!;
+  expect(backup).toMatchObject({ commit: "def", target: "oliynykmax/selfgit" });
+  expect(queue.claim("backup", 1001)).toBeNull();
+  db.run("UPDATE refs SET oid = 'ghi' WHERE name = 'refs/heads/main'");
+  queue.enqueue("ghi");
+  expect(queue.finish(backup.id, backup.leaseToken, true, 1002)).toBe(true);
+  expect(states(queue, "backup")).toEqual([
+    "ghi:queued",
+    "def:succeeded",
+    "abc:superseded",
+    "old2:superseded",
+    "old1:superseded",
+  ]);
+  db.close();
+});

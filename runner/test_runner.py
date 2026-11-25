@@ -110,7 +110,44 @@ class RunnerTest(unittest.TestCase):
 
     def test_rejects_other_kinds(self):
         with self.assertRaises(ValueError):
-            runner.execute({'kind': 'backup', 'commit': 'a' * 40})
+            runner.execute({'kind': 'release', 'commit': 'a' * 40})
+
+    def test_backup_pushes_every_ref_without_force_or_deletion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            git = Path(directory) / 'git'
+            git.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SELFGIT_ARGS"\nprintf "%s\\n" "$GIT_SSH_COMMAND" > "$SELFGIT_SSH"\n'
+                           'if [ "$1" = init ]; then mkdir -p "$4"; fi\n'
+                           'if [ "$1" = rev-parse ]; then echo ' + 'f' * 40 + '; fi\n')
+            git.chmod(0o755)
+            key = Path(directory) / 'key'
+            key.write_text('-----BEGIN OPENSSH PRIVATE KEY-----\nkey-secret\n')
+            known = Path(directory) / 'known_hosts'
+            known.write_text('github.com ssh-ed25519 AAAA\n')
+            args = Path(directory) / 'args'
+            ssh = Path(directory) / 'ssh'
+            calls = []
+            def request(endpoint, body):
+                calls.append((endpoint, body))
+                return {'ok': True}
+            job = {'id': 9, 'kind': 'backup', 'commit': 'f' * 40, 'leaseToken': 'lease', 'target': 'oliynykmax/selfgit'}
+            env = {'PATH': directory + ':' + os.environ['PATH'], 'SELFGIT_CI_WORKDIR': directory,
+                   'SELFGIT_ARGS': str(args), 'SELFGIT_SSH': str(ssh)}
+            with patch.dict(os.environ, env), patch.object(runner, 'request', request):
+                self.assertIsNone(runner.github_key())
+                with self.assertRaises(ValueError):
+                    runner.execute(job)
+            env.update(SELFGIT_CI_GITHUB_KEY_FILE=str(key), SELFGIT_CI_GITHUB_KNOWN_HOSTS=str(known))
+            with patch.dict(os.environ, env), patch.object(runner, 'request', request):
+                with self.assertRaises(ValueError):
+                    runner.execute({**job, 'target': 'oliynykmax/selfgit; rm -rf /'})
+                runner.execute(job)
+            push = [line for line in args.read_text().splitlines() if line.startswith('push')]
+            self.assertEqual(push, ['push git@github.com:oliynykmax/selfgit.git refs/heads/*:refs/heads/* refs/tags/*:refs/tags/*'])
+            self.assertIn('StrictHostKeyChecking=yes', ssh.read_text())
+            self.assertIn(str(known), ssh.read_text())
+            text = ''.join(body['text'] for endpoint, body in calls if endpoint == 'log')
+            self.assertNotIn('key-secret', text)
+            self.assertEqual(calls[-1], ('finish', {'id': 9, 'leaseToken': 'lease', 'success': True}))
 
 if __name__ == '__main__':
     unittest.main()

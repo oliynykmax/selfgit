@@ -5,6 +5,7 @@ import json
 import os
 import re
 import selectors
+import shlex
 import signal
 import subprocess
 import sys
@@ -51,6 +52,27 @@ SCRIPTS = {
 }
 
 
+# Runs on the runner host, not in a container: it executes no repository code, only git.
+BACKUP_SCRIPT = '''set -eu
+git init -q --bare "$1"
+cd "$1"
+git fetch https://git.oliinyk.dev/selfgit.git '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
+printf 'selfgit main is at %s\\n' "$(git rev-parse refs/heads/main)"
+# Never force and never delete: a rewritten or emptied selfgit fails the backup instead of overwriting it.
+git push "git@github.com:$2.git" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+'''
+GITHUB_REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
+
+
+def github_key():
+    """The backup deploy key and pinned GitHub host keys, or None when this runner is not set up to back up."""
+    key = os.environ.get('SELFGIT_CI_GITHUB_KEY_FILE')
+    known = os.environ.get('SELFGIT_CI_GITHUB_KNOWN_HOSTS')
+    if not key or not known or not os.path.exists(key) or not os.path.exists(known):
+        return None
+    return key, known
+
+
 def cloudflare_token():
     """The deploy credential, or None when this runner is not set up to deploy."""
     path = os.environ.get('SELFGIT_CI_CLOUDFLARE_TOKEN_FILE')
@@ -61,12 +83,22 @@ def cloudflare_token():
 
 
 def execute(job):
-    if job.get('kind') not in SCRIPTS or not re.fullmatch(r'[0-9a-f]{40}', job.get('commit', '')):
+    if job.get('kind') not in (*SCRIPTS, 'backup') or not re.fullmatch(r'[0-9a-f]{40}', job.get('commit', '')):
         raise ValueError('Invalid CI job')
     secrets = [TOKEN, job['leaseToken']]
     env = None
     env_args = []
-    if job['kind'] == 'deploy':
+    if job['kind'] == 'backup':
+        credential = github_key()
+        if not credential:
+            raise ValueError('Backup credential is not configured')
+        if not GITHUB_REPO.fullmatch(job.get('target', '')):
+            raise ValueError('Invalid backup target')
+        key, known = credential
+        env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_SSH_COMMAND': ' '.join([
+            'ssh', '-i', shlex.quote(key), '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
+            '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=' + shlex.quote(known)])}
+    elif job['kind'] == 'deploy':
         deploy_token = cloudflare_token()
         if not deploy_token:
             raise ValueError('Deploy credential is not configured')
@@ -75,13 +107,15 @@ def execute(job):
         env = {**os.environ, 'CLOUDFLARE_API_TOKEN': deploy_token}
         env_args = ['--env', 'CLOUDFLARE_API_TOKEN', '--env', 'CLOUDFLARE_ACCOUNT_ID=' + os.environ['SELFGIT_CI_CLOUDFLARE_ACCOUNT_ID']]
     lease = {'id': job['id'], 'leaseToken': job['leaseToken']}
-    script = SCRIPTS[job['kind']]
     workspace = tempfile.TemporaryDirectory(prefix='job-', dir=os.environ.get('SELFGIT_CI_WORKDIR', os.path.expanduser('~/ci-work')))
-    cache = os.environ.get('SELFGIT_CI_CACHE', os.path.expanduser('~/ci-cache'))
-    os.makedirs(cache, exist_ok=True)
-    cmd = ['podman', 'run', '--rm', '--name', 'selfgit-ci-%s' % job['id'], '--memory', MEMORY, '--memory-swap', MEMORY,
-           '--cpus', CPUS, '--pids-limit', '512', *env_args, '--volume', workspace.name + ':/tmp:Z', '--volume', cache + ':/cache:Z',
-           IMAGE, 'sh', '-c', script, 'ci', job['commit']]
+    if job['kind'] == 'backup':
+        cmd = ['sh', '-c', BACKUP_SCRIPT, 'backup', os.path.join(workspace.name, 'mirror.git'), job['target']]
+    else:
+        cache = os.environ.get('SELFGIT_CI_CACHE', os.path.expanduser('~/ci-cache'))
+        os.makedirs(cache, exist_ok=True)
+        cmd = ['podman', 'run', '--rm', '--name', 'selfgit-ci-%s' % job['id'], '--memory', MEMORY, '--memory-swap', MEMORY,
+               '--cpus', CPUS, '--pids-limit', '512', *env_args, '--volume', workspace.name + ':/tmp:Z', '--volume', cache + ':/cache:Z',
+               IMAGE, 'sh', '-c', SCRIPTS[job['kind']], 'ci', job['commit']]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, env=env)
     selector = selectors.DefaultSelector()
     selector.register(proc.stdout, selectors.EVENT_READ)
@@ -158,6 +192,8 @@ def main():
             job = request('claim', {'kind': 'ci'})
             if not job and cloudflare_token():
                 job = request('claim', {'kind': 'deploy'})
+            if not job and github_key():
+                job = request('claim', {'kind': 'backup'})
             if job:
                 execute(job)
             else:
