@@ -1,24 +1,33 @@
 ---
+import RepoNotice from "../../components/repo-notice.astro";
 import TreePage from "../../components/tree-page.astro";
 import Site from "../../layouts/site.astro";
 import { viewFor } from "../../lib/selfgit";
 
 const repo = Astro.params.repo ?? "";
 const ref = Astro.url.searchParams.get("ref") ?? "HEAD";
-const { tree, refs, duration: originDuration } = await viewFor(repo, "", ref);
-Astro.response.headers.set(
-  "Server-Timing",
-  `selfgit-tree;dur=${originDuration.toFixed(1)}`,
-);
+const view = await viewFor(repo, ref);
+if (view.kind === "missing") Astro.response.status = 404;
+if (view.kind === "tree")
+  Astro.response.headers.set(
+    "Server-Timing",
+    `selfgit-tree;dur=${view.duration.toFixed(1)}`,
+  );
 ---
 
 <Site title={`${repo} · git.oliinyk.dev`}>
-  <TreePage
-    repo={repo}
-    path=""
-    ref={ref}
-    refs={refs}
-    tree={tree}
-    originDuration={originDuration}
-  />
+  {
+    view.kind === "tree" ? (
+      <TreePage
+        repo={repo}
+        path=""
+        ref={ref}
+        refs={view.refs}
+        tree={view.tree}
+        originDuration={view.duration}
+      />
+    ) : (
+      <RepoNotice repo={repo} view={view} />
+    )
+  }
 </Site>

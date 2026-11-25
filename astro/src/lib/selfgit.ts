@@ -49,38 +49,45 @@ export function parentPath(path: string): string {
   return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
 }
 
-export async function treeFor(
-  repo: string,
-  path: string,
-  ref = "HEAD",
-): Promise<{ tree: TreeView; duration: number }> {
-  const params = new URLSearchParams({ ref });
-  if (path) params.set("path", path);
-  const startedAt = performance.now();
-  const response = await fetchSelfgit(
-    `/api/repos/${encodeURIComponent(repo)}/tree?${params}`,
-    { headers: { Accept: "application/json" } },
-  );
-  const duration = performance.now() - startedAt;
-  if (!response.ok)
+/** What a repository landing page shows. */
+export type RepoView =
+  | { kind: "tree"; tree: TreeView; refs: RepoRefs; duration: number }
+  | { kind: "empty"; refs: RepoRefs }
+  | { kind: "missing"; title: string; detail: string };
+
+/** A 404 is an answer the page shows; any other failure is a server error. */
+async function readApi(path: string): Promise<Response> {
+  const response = await fetchSelfgit(path, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok && response.status !== 404)
     throw new Error(`Repository request failed (${response.status})`);
-  return { tree: (await response.json()) as TreeView, duration };
+  return response;
 }
 
-export async function viewFor(
-  repo: string,
-  path: string,
-  ref = "HEAD",
-): Promise<{ tree: TreeView; refs: RepoRefs; duration: number }> {
-  const [treeResult, refs] = await Promise.all([
-    treeFor(repo, path, ref),
-    fetchSelfgit(`/api/repos/${encodeURIComponent(repo)}`, {
-      headers: { Accept: "application/json" },
-    }).then(async (response) => {
-      if (!response.ok)
-        throw new Error(`Repository request failed (${response.status})`);
-      return (await response.json()) as RepoRefs;
-    }),
+export async function viewFor(repo: string, ref = "HEAD"): Promise<RepoView> {
+  const name = encodeURIComponent(repo);
+  const startedAt = performance.now();
+  const [refsResponse, tree] = await Promise.all([
+    readApi(`/api/repos/${name}`),
+    readApi(`/api/repos/${name}/tree?${new URLSearchParams({ ref })}`).then(
+      (response) => ({ response, duration: performance.now() - startedAt }),
+    ),
   ]);
-  return { ...treeResult, refs };
+  if (refsResponse.status === 404)
+    return {
+      kind: "missing",
+      title: "Repository not found",
+      detail: `No repository named ${repo}.`,
+    };
+  const refs = (await refsResponse.json()) as RepoRefs;
+  if (!refs.defaultBranch && ref === "HEAD") return { kind: "empty", refs };
+  if (tree.response.status === 404)
+    return { kind: "missing", title: "Branch or tag not found", detail: ref };
+  return {
+    kind: "tree",
+    tree: (await tree.response.json()) as TreeView,
+    refs,
+    duration: tree.duration,
+  };
 }

@@ -295,6 +295,26 @@ describe("smart HTTP Git on a Durable Object", () => {
     expect((await fetch(`${base}/selfgit/actions`)).status).toBe(200);
   });
 
+  test("landing pages for missing repositories and refs are 404s, and an empty repository says how to push", async () => {
+    const landing = async (path: string) => {
+      const response = await fetch(`${base}${path}`);
+      return { status: response.status, html: await response.text() };
+    };
+    for (const path of ["/no-such-repo", "/login"]) {
+      const missing = await landing(path);
+      expect(missing.status).toBe(404);
+      expect(missing.html).toContain("Repository not found");
+    }
+    const badRef = await landing("/selfgit?ref=no-such-branch");
+    expect(badRef.status).toBe(404);
+    expect(badRef.html).toContain("Branch or tag not found");
+    expect((await createRepo("empty-landing")).status).toBe(201);
+    const empty = await landing("/empty-landing");
+    expect(empty.status).toBe(200);
+    expect(empty.html).toContain("This repository is empty");
+    expect(empty.html).toContain(`git remote add origin`);
+  });
+
   test("history pages read the same after the runtime restarts and drops its memory", async () => {
     const log = async (page = 0) =>
       await (
