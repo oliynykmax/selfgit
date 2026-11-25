@@ -55,10 +55,10 @@ bun install
 bun run deploy
 ```
 
-Then, in [`wrangler.jsonc`](wrangler.jsonc):
+`bun run deploy` deploys the stack in [`alchemy.run.ts`](alchemy.run.ts) with [Alchemy](https://alchemy.run), using `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the environment. Local development and the tests run the same Worker from [`wrangler.jsonc`](wrangler.jsonc). In both files:
 
 1. Set `GITHUB_OWNER_ID` to your numeric GitHub id (`gh api user --jq .id`). The id is checked, not the login, because a login can be renamed and claimed by someone else.
-2. Point `routes` at your own domain.
+2. Point the custom domain (`domain` in `alchemy.run.ts`, `routes` in `wrangler.jsonc`) at your own domain.
 3. Add `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` as Worker secrets for web sign-in.
 
 ### Develop

@@ -8,7 +8,7 @@
     "astro:build": "bunx --bun astro build --root astro",
     "astro:check": "astro check --root astro",
     "build": "bun scripts/web.ts",
-    "deploy": "bun run build && wrangler deploy",
+    "deploy": "bun run build && alchemy deploy --stage prod --adopt --yes --no-input",
     "types": "wrangler types",
     "typecheck": "bun check && bun check -p web",
     "test": "bun run build && bun test --timeout 300000",

@@ -46,7 +46,7 @@ run 'bun install --frozen-lockfile'
 '''
 SCRIPTS = {
     'ci': PRELUDE + "run 'bun run ci'\n",
-    # Wrangler reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the container environment.
+    # Alchemy reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the container environment.
     'deploy': PRELUDE + "run 'bun run deploy'\n",
 }
 

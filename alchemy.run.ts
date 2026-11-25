@@ -5,7 +5,8 @@ import * as Cloudflare from "@alchemy.run/cloudflare";
 /**
  * The main selfgit deployment, managed by alchemy.run (replacing wrangler).
  *  - name "selfgit" + custom domain git.oliinyk.dev
- *  - the R2 bucket is bound via lookup: alchemy never manages the bucket
+ *  - the R2 bucket is bound by name: alchemy never manages or reads it, so
+ *    the deploy token needs no R2 permission
  *  - Durable Object classes keep their existing production state
  *    (script version updates never reset DO storage)
  *  - GITHUB_OAUTH_* secrets persist on the script across versions
@@ -26,7 +27,6 @@ export default Stack(
       domain: "git.oliinyk.dev",
       env: {
         GITHUB_OWNER_ID: "85843900",
-        OBJECTS: Cloudflare.R2.Bucket.lookup({ name: "selfgit-objects" }),
         REPOS: Cloudflare.DurableObject("REPOS", {
           className: "Repository",
           storage: "sqlite",
@@ -46,6 +46,12 @@ export default Stack(
         runWorkerFirst: true,
       },
     } as never);
+
+    yield* worker.bind`OBJECTS`({
+      bindings: [
+        { type: "r2_bucket", name: "OBJECTS", bucketName: "selfgit-objects" },
+      ],
+    });
 
     return { worker };
   }),
