@@ -1,5 +1,9 @@
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import globalJsdom from "global-jsdom";
+import {
+  unstable_IdlePriority as IdlePriority,
+  unstable_scheduleCallback as scheduleCallback,
+} from "scheduler";
 
 const nativeGlobals = {
   fetch: globalThis.fetch,
@@ -51,7 +55,9 @@ let approve = false;
 const agent = createAgent({ allow: (step) => !step.confirm || approve });
 
 afterEach(cleanup);
-afterAll(() => {
+afterAll(async () => {
+  // Updates outside act leave React work queued; it reads window when it runs.
+  await new Promise((done) => scheduleCallback(IdlePriority, done));
   restoreGlobals();
   Object.assign(globalThis, nativeGlobals);
 });

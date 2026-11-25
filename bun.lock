@@ -46,6 +46,7 @@
         "effect": "^4.1.5",
         "global-jsdom": "^31.0.0",
         "jsdom": "^31.0.1",
+        "scheduler": "^0.28.0",
         "tailwindcss": "^4.3.5",
         "typescript": "^6.0.3",
         "wrangler": "4.157.0",
