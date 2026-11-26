@@ -21,6 +21,9 @@ export class CiQueue {
       state TEXT NOT NULL, lease_token TEXT, lease_until INTEGER, log TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL, finished_at INTEGER
     )`);
+    sql.exec(
+      "CREATE INDEX IF NOT EXISTS ci_jobs_kind_state ON ci_jobs (kind, state)",
+    );
   }
   enqueue(oid: string) {
     this.sql.exec(
@@ -43,7 +46,7 @@ export class CiQueue {
     );
     // A deploy or backup that already started must finish; only waiting ones go stale.
     this.sql.exec(
-      "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE kind = ? AND (state = 'queued' OR (state = 'leased' AND kind = 'ci')) AND commit_oid != coalesce((SELECT oid FROM refs WHERE name = 'refs/heads/main'), '')",
+      "UPDATE ci_jobs SET state = 'superseded', finished_at = ?, lease_token = NULL, lease_until = NULL WHERE kind = ? AND state IN ('queued', 'leased') AND (state = 'queued' OR kind = 'ci') AND commit_oid != coalesce((SELECT oid FROM refs WHERE name = 'refs/heads/main'), '')",
       now,
       kind,
     );

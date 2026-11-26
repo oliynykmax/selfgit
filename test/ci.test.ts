@@ -177,3 +177,30 @@ test("only the newest backup waits, and it names the GitHub mirror", () => {
   ]);
   db.close();
 });
+
+test("an idle claim does not scan every job", () => {
+  const db = new Database(":memory:");
+  const statements: string[] = [];
+  const sql = {
+    exec(query: string, ...args: unknown[]) {
+      statements.push(query);
+      const rows = db.query(query).all(...(args as never[]));
+      return { toArray: () => rows, one: () => rows[0] };
+    },
+  } as unknown as SqlStorage;
+  db.run("CREATE TABLE refs (name TEXT PRIMARY KEY, oid TEXT NOT NULL)");
+  db.run("INSERT INTO refs VALUES ('refs/heads/main', 'abc')");
+  const queue = new CiQueue(sql);
+  queue.enqueue("abc");
+  statements.length = 0;
+  for (const kind of ["ci", "deploy", "backup"] as const)
+    queue.claim(kind, Date.now());
+  for (const query of new Set(statements)) {
+    const params = Array(query.split("?").length - 1).fill("ci");
+    const plan = db
+      .query(`EXPLAIN QUERY PLAN ${query}`)
+      .all(...(params as never[])) as { detail: string }[];
+    expect(plan.map((step) => step.detail)).not.toContain("SCAN ci_jobs");
+  }
+  db.close();
+});
